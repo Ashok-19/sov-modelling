@@ -49,6 +49,10 @@ GROUP_NAME_SCHEMA = {
 # clearly unrelated themes aren't checked.
 MERGE_NEIGHBOURS = 4
 MERGE_EXAMPLES = 6
+# Two groups of themes join when at least this share of the pairs between them
+# are judged the same. Requiring every pair let one noisy verdict keep obvious
+# duplicates apart; a clear majority still stops unrelated themes chaining.
+MERGE_AGREEMENT = 2 / 3
 
 SYSTEM = (
     "You are a social listening analyst preparing a share of voice report on online "
@@ -184,13 +188,17 @@ def _same_theme(client, topic, named, texts, vecs, labels, cents, a, b):
                       f"Example posts:\n{_fmt(_examples(texts, vecs, labels, c, cents))}")
     user = (
         f"Parent topic: {topic}\n\n=== GROUP A ===\n{side(a)}\n\n=== GROUP B ===\n{side(b)}\n\n"
-        "Should A and B be reported as one theme in a share of voice report? Say yes only if "
-        "they make the same core claim or are about the same specific thing, so that one name "
-        "fits both without losing anything an analyst would care about. Differences in "
-        "wording or tone don't matter, and posts that debunk a claim belong with the claim. "
-        "Say no if they are about different claims, causes, treatments, products, people or "
-        "events, even when related: for example 'COVID vaccines cause MS' and 'parasites "
-        "cause MS' are different themes."
+        "Should A and B be reported as one theme in a share of voice report? Judge the core "
+        "claim or subject, the thing an analyst would count: who or what the posts are about "
+        "and what they say about it.\n"
+        "Say yes when the core claim is the same, even if the posts cite a different source, "
+        "describe a different mechanism, use different wording or tone, or name a more or less "
+        "specific version of the same thing. For example 'WHO says COVID vaccination causes MS' "
+        "and 'mRNA shots cause MS' are the same theme: both claim COVID vaccines cause MS. Posts "
+        "that debunk a claim belong with the claim.\n"
+        "Say no when the core claim or subject differs, even if related. For example 'COVID "
+        "vaccines cause MS' and 'parasites cause MS' are different themes, and so are 'COVID "
+        "vaccines cause MS' and 'general distrust of health authorities'."
     )
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
     try:
@@ -211,10 +219,11 @@ def merge_themes(client, topic, named, texts, vecs, labels):
     into two or three vague buckets. So instead themes are compared one pair at
     a time, with example posts from both.
 
-    Groups are only joined when every theme in one is judged the same as every
-    theme in the other. Simply chaining "A is like B" and "B is like C" let a
+    Groups are only joined when a clear majority of the pairs between them are
+    judged the same. Simply chaining "A is like B" and "B is like C" let a
     whole topic collapse into one theme, because C and A can be about quite
-    different things. Missing pairs are asked about when needed.
+    different things; requiring every single pair to agree went too far the
+    other way. Missing pairs are asked about when needed.
 
     Returns {cluster label: (final theme, final description)}.
     """
@@ -250,19 +259,21 @@ def merge_themes(client, topic, named, texts, vecs, labels):
     for a, b in sorted(pairs, key=lambda p: -sim[p]):
         same(a, b)
 
-    # Join groups, closest pairs first, only when all cross pairs agree.
+    # Join groups, closest pairs first, when most of the cross pairs agree.
     group_of = {c: frozenset([c]) for c in ids}
     for (a, b), is_same in sorted(verdicts.items(), key=lambda kv: -sim[kv[0]]):
         ga, gb = group_of[a], group_of[b]
         if not is_same or ga == gb:
             continue
-        if all(same(x, y) for x in ga for y in gb):
+        votes = [same(x, y) for x in ga for y in gb]
+        if sum(votes) / len(votes) >= MERGE_AGREEMENT:
             merged = ga | gb
             for c in merged:
                 group_of[c] = merged
         else:
-            log.info("  Not joining %s with %s: not every pair between them matches",
-                     [named[c]["theme"] for c in ga], [named[c]["theme"] for c in gb])
+            log.info("  Not joining %s with %s: only %d of %d pairs between them match",
+                     [named[c]["theme"] for c in ga], [named[c]["theme"] for c in gb],
+                     sum(votes), len(votes))
 
     groups = {g: sorted(g) for g in set(group_of.values())}
     out = {}

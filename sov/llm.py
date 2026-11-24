@@ -1,5 +1,6 @@
 """Thin client for the Gemma naming model served by llama.cpp."""
 
+import hashlib
 import json
 import logging
 
@@ -43,6 +44,20 @@ class Client:
     def __init__(self, url, ctx=config.LLM_CTX):
         self.url = url
         self.ctx = ctx
+        # Answers are saved by a hash of the exact request, so rerunning the
+        # same input (same posts, prompts, model and settings) is instant and
+        # gives the same result. Delete the file to start fresh.
+        self.cache_file = config.CACHE_DIR / "llm_answers.jsonl"
+        self.cache = {}
+        if self.cache_file.exists():
+            for line in open(self.cache_file):
+                item = json.loads(line)
+                self.cache[item["key"]] = item["answer"]
+
+    def _key(self, messages, schema, name):
+        blob = json.dumps([config.LLM_FILE, config.LLM_THINKING, config.LLM_THINKING_BUDGET,
+                           SEED, name, schema, messages], sort_keys=True)
+        return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 
     def _prompt(self, messages):
         r = requests.post(self.url + "/apply-template", json={"messages": messages}, timeout=120)
@@ -65,12 +80,18 @@ class Client:
         Tries twice. If both fail it raises ValueError, and the caller decides
         what to do, so one bad answer can't sink a long run.
         """
+        key = self._key(messages, schema, name)
+        if key in self.cache:
+            return self.cache[key], {"prompt_tokens": 0, "completion_tokens": 0, "cached": True}
         for attempt in range(1, tries + 1):
             try:
                 answer, usage = self._chat_json_once(messages, schema, name)
                 empty = [k for k, v in answer.items() if isinstance(v, str) and not v.strip()]
                 if empty:
                     raise ValueError(f"empty field(s) {empty}")
+                self.cache[key] = answer
+                with open(self.cache_file, "a") as f:
+                    f.write(json.dumps({"key": key, "answer": answer}) + "\n")
                 return answer, usage
             # A lost connection means the server itself has gone, so we let that
             # stop the run rather than fill the output with placeholders.
