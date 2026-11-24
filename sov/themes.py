@@ -17,8 +17,8 @@ N_CONTRAST = 25
 NAME_SCHEMA = {
     "type": "object",
     "properties": {
-        "theme": {"type": "string"},
-        "description": {"type": "string"},
+        "theme": {"type": "string", "maxLength": 100},
+        "description": {"type": "string", "maxLength": 500},
         "confidence": {"type": "number"},
     },
     "required": ["theme", "description", "confidence"],
@@ -26,13 +26,17 @@ NAME_SCHEMA = {
 
 SAME_SCHEMA = {
     "type": "object",
-    "properties": {"same_theme": {"type": "boolean"}, "reason": {"type": "string"}},
+    # The short reason comes first so the model thinks before it answers; the
+    # length cap stops it from writing an essay.
+    "properties": {"reason": {"type": "string", "maxLength": 300},
+                   "same_theme": {"type": "boolean"}},
     "required": ["reason", "same_theme"],
 }
 
 GROUP_NAME_SCHEMA = {
     "type": "object",
-    "properties": {"theme": {"type": "string"}, "description": {"type": "string"}},
+    "properties": {"theme": {"type": "string", "maxLength": 100},
+                   "description": {"type": "string", "maxLength": 500}},
     "required": ["theme", "description"],
 }
 
