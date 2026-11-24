@@ -5,3 +5,16 @@ __pycache__/
 data/
 cache/
 output/
+
+# never commit client data or anything big, wherever it ends up
+*.xlsx
+*.xls
+*.csv
+*.gguf
+*.safetensors
+*.bin
+*.npz
+*.npy
+*.log
+*.typescript
+models/
