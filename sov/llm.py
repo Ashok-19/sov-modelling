@@ -56,8 +56,23 @@ class Client:
     def prompt_budget(self):
         return self.ctx - config.LLM_MAX_OUTPUT - config.LLM_THINKING_BUDGET - 256
 
-    def chat_json(self, messages, schema, name="answer"):
+    def chat_json(self, messages, schema, name="answer", tries=2):
         """Send a chat and get back JSON that matches `schema`.
+
+        Tries twice. If both fail it raises ValueError, and the caller decides
+        what to do, so one bad answer can't sink a long run.
+        """
+        for attempt in range(1, tries + 1):
+            try:
+                return self._chat_json_once(messages, schema, name)
+            # A lost connection means the server itself has gone, so we let that
+            # stop the run rather than fill the output with placeholders.
+            except (ValueError, KeyError, requests.HTTPError, requests.Timeout) as e:
+                log.warning("LLM %s answer unusable (try %d of %d): %s", name, attempt, tries, e)
+        raise ValueError(f"no usable answer from the LLM for {name}")
+
+    def _chat_json_once(self, messages, schema, name):
+        """One request.
 
         With thinking on, the model reasons first and the server keeps that
         apart from the answer, so the JSON schema only applies to the answer.

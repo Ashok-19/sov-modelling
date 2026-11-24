@@ -1,9 +1,13 @@
 """Naming clusters, merging names that mean the same thing, and placing noise posts.
 
 Each cluster is named in a single LLM call that sees every post in it, and only
-posts from that cluster. We never split a cluster into chunks. If a cluster is too big for the context window we
-send as many posts as fit (most central first), log a warning, and mark the
-theme as truncated in the output so nobody mistakes it for a full read.
+posts from that cluster. We never split a cluster into chunks. If a cluster is
+too big for the context window we send as many posts as fit (most central
+first), log a warning, and mark the theme as truncated in the output so nobody
+mistakes it for a full read.
+
+If the LLM fails to give a usable answer twice, we don't stop the run: the
+cluster gets a placeholder name built from its keywords, logged as an error.
 """
 
 import logging
@@ -107,7 +111,16 @@ def name_clusters(client, topic, texts, vecs, labels, keywords):
                         "only the %d most central fit in %d tokens. Marked as truncated.",
                         topic, c, len(posts), keep, client.ctx)
         log.info("Naming cluster %d (%d posts, %d prompt tokens)", c, len(posts), n_tokens)
-        answer, _ = client.chat_json(messages, NAME_SCHEMA, "cluster_name")
+        try:
+            answer, _ = client.chat_json(messages, NAME_SCHEMA, "cluster_name")
+        except ValueError:
+            log.error("Could not name cluster %d in %s; using its keywords instead", c, topic)
+            answer = {"theme": "Unnamed: " + ", ".join(keywords.get(c, [])[:4]),
+                      "description": "The LLM gave no usable name for this cluster.",
+                      "confidence": 0.0}
+        # "Other" is kept for posts that fit no theme.
+        if answer["theme"].strip().lower() == "other":
+            answer["theme"] = f"Other ({', '.join(keywords.get(c, [])[:3])})"
         results[c] = {**answer, "size": len(posts), "prompt_tokens": n_tokens,
                       "truncated": truncated, "keywords": keywords.get(c, [])}
         log.info("  -> %s (confidence %.2f)", answer["theme"], answer["confidence"])
@@ -163,7 +176,12 @@ def merge_themes(client, topic, named, texts, vecs, labels):
             "products, people or events, say no."
         )
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
-        answer, _ = client.chat_json(messages, SAME_SCHEMA, "same_theme")
+        try:
+            answer, _ = client.chat_json(messages, SAME_SCHEMA, "same_theme")
+        except ValueError:
+            log.error("Merge check failed for %s vs %s; keeping them apart",
+                      named[a]["theme"], named[b]["theme"])
+            answer = {"same_theme": False, "reason": "no usable answer"}
         log.info("  %s  vs  %s: %s (%s)", named[a]["theme"], named[b]["theme"],
                  "same" if answer["same_theme"] else "different", answer["reason"][:120])
         progress.ui.advance()
@@ -186,7 +204,12 @@ def merge_themes(client, topic, named, texts, vecs, labels):
                 "Give one short, specific theme name (3 to 8 words) and a one or two sentence "
                 "description that covers all of them. Keep it as specific as the names above.")
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
-        answer, _ = client.chat_json(messages, GROUP_NAME_SCHEMA, "group_name")
+        try:
+            answer, _ = client.chat_json(messages, GROUP_NAME_SCHEMA, "group_name")
+        except ValueError:
+            log.error("Could not rename a merged group; using its first member's name")
+            answer = {"theme": named[members[0]]["theme"],
+                      "description": named[members[0]]["description"]}
         log.info("Merged %s -> %s", [named[c]["theme"] for c in members], answer["theme"])
         for c in members:
             out[c] = (answer["theme"], answer["description"])
