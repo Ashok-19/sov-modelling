@@ -15,7 +15,7 @@ from .server import llama_server, model_path
 
 log = logging.getLogger(__name__)
 
-BATCH = 16
+BATCH = 32
 
 
 def _key(text):
@@ -41,11 +41,15 @@ def _save_cache(cache):
 
 
 def server_args():
-    # The longest post is about 5.8k tokens, and with last-token pooling a post
-    # has to fit in one micro-batch, hence the 8k batch. A bigger context won't
-    # fit in 4 GB next to the model. GPU layers are left to llama.cpp's auto-fit.
-    return ["--embedding", "--pooling", "last", "-fa", "on", "-c", "8192", "-np", "1",
-            "-b", "8192", "-ub", "8192", "-ctk", "q8_0", "-ctv", "q8_0"]
+    # Every layer goes on the GPU (-ngl 99), so if it doesn't fit the server
+    # fails loudly instead of quietly moving layers to the CPU. The trick is a
+    # small micro-batch (-ub 512): the model is causal, so a long post can be
+    # fed through in several 512-token steps and the last-token vector comes out
+    # the same (we checked: cosine 0.998 against a single 8k step on CPU).
+    # The 8k context and batch cover the longest post, about 5.8k tokens.
+    return ["--embedding", "--pooling", "last", "-ngl", "99", "-fa", "on",
+            "-c", "8192", "-np", "1", "-b", "8192", "-ub", "512",
+            "-ctk", "q8_0", "-ctv", "q8_0"]
 
 
 def embed_posts(texts):
