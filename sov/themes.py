@@ -24,24 +24,21 @@ NAME_SCHEMA = {
     "required": ["theme", "description", "confidence"],
 }
 
-MERGE_SCHEMA = {
+SAME_SCHEMA = {
     "type": "object",
-    "properties": {
-        "groups": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "ids": {"type": "array", "items": {"type": "integer"}},
-                    "theme": {"type": "string"},
-                    "description": {"type": "string"},
-                },
-                "required": ["ids", "theme", "description"],
-            },
-        }
-    },
-    "required": ["groups"],
+    "properties": {"same_theme": {"type": "boolean"}, "reason": {"type": "string"}},
+    "required": ["reason", "same_theme"],
 }
+
+GROUP_NAME_SCHEMA = {
+    "type": "object",
+    "properties": {"theme": {"type": "string"}, "description": {"type": "string"}},
+    "required": ["theme", "description"],
+}
+
+# Each theme is only compared with its few nearest neighbours by embedding.
+MERGE_NEIGHBOURS = 2
+MERGE_EXAMPLES = 6
 
 SYSTEM = (
     "You are an analyst reviewing social media posts about multiple sclerosis (MS) and "
@@ -71,9 +68,11 @@ def _name_messages(topic, keywords, posts, contrast):
         f"=== POSTS IN THIS GROUP ({len(posts)}) ===\n{_fmt(posts)}\n\n"
         f"=== CONTRAST: posts from neighbouring groups (NOT in this group) ===\n{_fmt(contrast)}\n\n"
         "Read every post in the group. Then give:\n"
-        "- theme: a short, specific name (3 to 8 words) for what these posts have in common, "
-        "specific enough to tell this group apart from the contrast posts. Avoid generic names "
-        "like 'MS discussion' or 'Patient experiences'.\n"
+        "- theme: a short, specific name (3 to 8 words) for what these posts have in common. "
+        "Name the actual claim, product, person, event or concern (for example 'Ivermectin "
+        "promoted as an MS cure' rather than 'Alternative treatments'), specific enough to tell "
+        "this group apart from the contrast posts. Avoid generic names like 'MS discussion', "
+        "'Patient experiences' or 'Misinformation about MS'.\n"
         "- description: one or two sentences on what the posts talk about.\n"
         "- confidence: from 0 to 1, how clearly the posts share one theme."
     )
@@ -125,8 +124,20 @@ def name_clusters(client, topic, texts, vecs, labels, keywords):
     return results
 
 
-def merge_themes(client, topic, named, vecs, labels):
-    """Ask the LLM which theme names describe the same thing. No target count.
+def _examples(texts, vecs, labels, c, cents, n=MERGE_EXAMPLES):
+    idx = np.where(labels == c)[0]
+    idx = idx[np.argsort(-(vecs[idx] @ cents[c]))][:n]
+    return [texts[i][:600] for i in idx]
+
+
+def merge_themes(client, topic, named, texts, vecs, labels):
+    """Merge themes that are really the same thing. There's no target count.
+
+    Asking the model to regroup a whole list at once made it lump everything
+    into two or three vague buckets. So instead each theme is checked against
+    its nearest neighbours one pair at a time, with example posts from both,
+    and merged only when the model says they make the same specific point.
+    Merged groups then get one fresh name.
 
     Returns {cluster label: (final theme, final description)}.
     """
@@ -137,38 +148,55 @@ def merge_themes(client, topic, named, vecs, labels):
     cmat = np.stack([cents[c] for c in ids])
     sims = cmat @ cmat.T
 
-    lines = []
-    for i, c in enumerate(ids):
-        closest = [j for j in np.argsort(-sims[i]) if j != i][:3]
-        hint = ", ".join(f"#{ids[j]} ({sims[i, j]:.2f})" for j in closest)
-        lines.append(f"#{c}: {named[c]['theme']} ({named[c]['size']} posts)\n"
-                     f"    {named[c]['description']}\n    most similar by embedding: {hint}")
-    user = (
-        f"Parent topic: {topic}\n\nThese themes were found by clustering posts in this topic:\n\n"
-        + "\n".join(lines)
-        + "\n\nDecide which themes are really the same theme under different names and should be "
-        "merged. Only merge themes that a reader would see as the same thing; keep themes apart "
-        "if they cover different aspects, even when related. There is no target number of themes: "
-        "it's fine if nothing gets merged.\n"
-        "Return every theme id exactly once, in groups. A theme that isn't merged is its own group. "
-        "For each group give the final theme name (short and specific) and a one or two sentence "
-        "description. For a single-theme group you can keep its current name."
-    )
-    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
-    answer, _ = client.chat_json(messages, MERGE_SCHEMA, "theme_merge")
+    pairs = set()
+    for i in range(len(ids)):
+        for j in [j for j in np.argsort(-sims[i]) if j != i][:MERGE_NEIGHBOURS]:
+            pairs.add(tuple(sorted((ids[i], ids[j]))))
 
-    out, seen = {}, set()
-    for g in answer["groups"]:
-        members = [i for i in g["ids"] if i in named and i not in seen]
-        seen.update(members)
-        for i in members:
-            out[i] = (g["theme"], g["description"])
-        if len(members) > 1:
-            log.info("Merged %s -> %s", [named[i]["theme"] for i in members], g["theme"])
-    for c in ids:  # anything the model forgot keeps its own name
-        if c not in out:
-            log.warning("Merge step left out cluster %d; keeping its own name", c)
+    parent = {c: c for c in ids}
+
+    def root(c):
+        while parent[c] != c:
+            c = parent[c]
+        return c
+
+    for a, b in sorted(pairs):
+        side = lambda c: (f"Theme: {named[c]['theme']}\nDescription: {named[c]['description']}\n"
+                          f"Example posts:\n{_fmt(_examples(texts, vecs, labels, c, cents))}")
+        user = (
+            f"Parent topic: {topic}\n\n=== GROUP A ===\n{side(a)}\n\n=== GROUP B ===\n{side(b)}\n\n"
+            "Are A and B the same theme? Say yes only if they make the same specific claim or "
+            "discuss the same specific thing, so that reporting them under one name would lose "
+            "nothing an analyst cares about. If they are related but about different claims, "
+            "products, people or events, say no."
+        )
+        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
+        answer, _ = client.chat_json(messages, SAME_SCHEMA, "same_theme")
+        log.info("  %s  vs  %s: %s (%s)", named[a]["theme"], named[b]["theme"],
+                 "same" if answer["same_theme"] else "different", answer["reason"][:120])
+        if answer["same_theme"]:
+            parent[root(b)] = root(a)
+
+    groups = {}
+    for c in ids:
+        groups.setdefault(root(c), []).append(c)
+    out = {}
+    for members in groups.values():
+        if len(members) == 1:
+            c = members[0]
             out[c] = (named[c]["theme"], named[c]["description"])
+            continue
+        listing = "\n".join(f"- {named[c]['theme']}: {named[c]['description']}" for c in members)
+        examples = sum((_examples(texts, vecs, labels, c, cents, 3) for c in members), [])
+        user = (f"Parent topic: {topic}\n\nThese groups of posts were judged to be the same theme:\n"
+                f"{listing}\n\nExample posts:\n{_fmt(examples)}\n\n"
+                "Give one short, specific theme name (3 to 8 words) and a one or two sentence "
+                "description that covers all of them. Keep it as specific as the names above.")
+        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
+        answer, _ = client.chat_json(messages, GROUP_NAME_SCHEMA, "group_name")
+        log.info("Merged %s -> %s", [named[c]["theme"] for c in members], answer["theme"])
+        for c in members:
+            out[c] = (answer["theme"], answer["description"])
     return out
 
 

@@ -86,7 +86,7 @@ def run(topic_numbers=None, leiden=False, ctx=config.LLM_CTX, out_name=None):
             with timer("llm naming"):
                 named = themes.name_clusters(client, name, texts, tv, labels, kw)
             with timer("llm merge"):
-                final = themes.merge_themes(client, name, named, tv, labels)
+                final = themes.merge_themes(client, name, named, texts, tv, labels)
             theme_of, floor, reassigned = themes.assign_noise(tv, labels, final)
             desc = {t: d for t, d in final.values()}
             desc["Other"] = "Did not fit any theme in this topic closely enough."
