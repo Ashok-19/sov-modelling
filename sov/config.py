@@ -44,5 +44,9 @@ LLM_CTX = int(os.environ.get("SOV_LLM_CTX", 131072))
 # Lower it if you use a smaller context or have a bigger GPU.
 LLM_CPU_FFN_LAYERS = int(os.environ.get("SOV_LLM_CPU_FFN_LAYERS", 30))
 LLM_MAX_OUTPUT = 1024
+# Let Gemma think before it answers. Better answers, but each call takes longer.
+# Set SOV_LLM_THINKING=0 to switch it off. The budget caps how long it thinks.
+LLM_THINKING = os.environ.get("SOV_LLM_THINKING", "1") != "0"
+LLM_THINKING_BUDGET = int(os.environ.get("SOV_LLM_THINKING_BUDGET", 4096))
 
 PORT = int(os.environ.get("SOV_PORT", 8091))
