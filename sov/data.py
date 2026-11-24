@@ -1,6 +1,7 @@
 """Loading the spreadsheet and tidying topic names."""
 
 import re
+from pathlib import Path
 
 import pandas as pd
 
@@ -22,6 +23,8 @@ def topic_number(name):
 def load(path=config.DATA_FILE, sheet=config.SHEET):
     """Read the posts from an Excel file (.xlsx/.xls) or a CSV."""
     path = str(path)
+    if not Path(path).exists():
+        raise SystemExit(f"Input file not found: {path}")
     if path.lower().endswith(".csv"):
         df = pd.read_csv(path)
     else:
