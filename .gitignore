@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+# input data and everything the pipeline writes stays local
+data/
+cache/
+output/
