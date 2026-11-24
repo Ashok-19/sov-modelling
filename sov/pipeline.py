@@ -40,16 +40,15 @@ def run(topic_numbers=None, leiden=False, ctx=config.LLM_CTX, out_name=None):
                "embed_model": config.EMBED_FILE, "llm_model": config.LLM_FILE,
                "llm_context": ctx, "topics": {}}
 
-    with timer("load + dedupe"):
+    with timer("load"):
         df = data.load()
         available = data.list_topics(df)
         wanted = topic_numbers or list(available)
         missing = [t for t in wanted if t not in available]
         if missing:
             raise SystemExit(f"Unknown topic number(s) {missing}. Available: {available}")
-        df = df[df["topic_num"].isin(wanted)]
-        kept, dups = data.dedupe(df)
-        log.info("%d posts in selected topics, %d exact duplicates set aside", len(df), len(dups))
+        kept = df[df["topic_num"].isin(wanted)].copy()
+        log.info("%d posts in selected topics", len(kept))
 
     with timer("embed"):
         vecs = embed.embed_posts(kept[config.TEXT_COL].fillna("").astype(str).tolist())
@@ -107,27 +106,21 @@ def run(topic_numbers=None, leiden=False, ctx=config.LLM_CTX, out_name=None):
             info["largest_cluster_tokens"] = max((n["prompt_tokens"] for n in named.values()), default=0)
             info["truncated_clusters"] = [int(c) for c, n in named.items() if n["truncated"]]
 
-    # Duplicates inherit the theme of the post they copy.
-    theme_cols = ["Cluster", "Consolidated Theme", "Theme Description", "Theme Assigned By", "Theme Truncated"]
-    lookup = kept.set_index(config.ID_COL)[theme_cols]
-    dups = dups.join(lookup, on="duplicate_of")
-
     run_log["timings_s"] = {k: round(v, 1) for k, v in timer.times.items()}
     run_log["finished"] = datetime.now().isoformat(timespec="seconds")
     out_name = out_name or f"sov_themes_{datetime.now():%Y%m%d_%H%M}"
-    write_outputs(kept, dups, run_log, out_name)
+    write_outputs(kept, run_log, out_name)
     return kept, run_log
 
 
-def summary_table(kept, dups):
+def summary_table(kept):
     rows = []
     for (topic, theme), g in kept.groupby(["topic_clean", "Consolidated Theme"], sort=True):
-        n_dup = int(((dups["topic_clean"] == topic) & (dups["Consolidated Theme"] == theme)).sum())
         clustered = g[g["Theme Assigned By"] == "cluster"]
         examples = (clustered if len(clustered) else g)[config.TEXT_COL].astype(str).head(5)
         row = {"Topic": topic, "Consolidated Theme": theme,
                "Description": g["Theme Description"].iloc[0],
-               "Posts": len(g), "Posts incl. duplicates": len(g) + n_dup,
+               "Posts": len(g),
                "From noise": int((g["Theme Assigned By"] == "nearest theme").sum()),
                "Truncated in LLM step": bool(g["Theme Truncated"].any())}
         for i, ex in enumerate(examples, 1):
@@ -137,13 +130,13 @@ def summary_table(kept, dups):
     return out.sort_values(["Topic", "Posts"], ascending=[True, False])
 
 
-def write_outputs(kept, dups, run_log, out_name):
+def write_outputs(kept, run_log, out_name):
     xlsx = config.OUTPUT_DIR / f"{out_name}.xlsx"
     original_cols = [c for c in kept.columns if c not in ("topic_clean", "topic_num")]
     with pd.ExcelWriter(xlsx) as w:
         kept.rename(columns={"topic_clean": "Topic"})[["Topic"] + original_cols].to_excel(
             w, sheet_name="Posts", index=False)
-        summary_table(kept, dups).to_excel(w, sheet_name="Theme Summary", index=False)
+        summary_table(kept).to_excel(w, sheet_name="Theme Summary", index=False)
         params = [{"Topic": t, "Posts": i["posts"], **{k: v for k, v in i["hdbscan"].items()},
                    "Leiden": json.dumps(i.get("leiden")) if i.get("leiden") else "",
                    "Noise floor": i.get("noise_floor"),
@@ -153,8 +146,6 @@ def write_outputs(kept, dups, run_log, out_name):
         pd.DataFrame(params).to_excel(w, sheet_name="Run Log", index=False)
         pd.DataFrame([run_log["timings_s"]]).to_excel(w, sheet_name="Run Log", index=False,
                                                        startrow=len(params) + 3)
-    dups.drop(columns=["topic_num"]).rename(columns={"topic_clean": "Topic"}).to_excel(
-        config.OUTPUT_DIR / f"{out_name}_duplicates.xlsx", index=False)
     with open(config.OUTPUT_DIR / f"{out_name}_runlog.json", "w") as f:
         json.dump(run_log, f, indent=2, default=float)
-    log.info("Wrote %s (+ _duplicates.xlsx, _runlog.json)", xlsx)
+    log.info("Wrote %s (+ _runlog.json)", xlsx)

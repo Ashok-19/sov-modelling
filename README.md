@@ -11,32 +11,28 @@ The plan behind it is in [docs/pipeline-plan.md](docs/pipeline-plan.md).
 1. **Load.** Read `data/ocrevus_ms_social_listening_classified.xlsx` (sheet
    "Master Data") and fold topic spelling variants into one name. The
    "Non-MS / Noise" topic is skipped. Post text is never edited.
-2. **Dedupe.** Exact copies of a post within a topic are set aside in a
-   separate file, each pointing at the Post_ID we kept. They get the same theme
-   as that post.
-3. **Embed.** Qwen3-Embedding-4B (GGUF, Q5_K_M) in llama.cpp with last-token
+2. **Embed.** Qwen3-Embedding-4B (GGUF, Q5_K_M) in llama.cpp with last-token
    pooling. Every post gets the same English instruction in front of it.
    Vectors are L2-normalised and cached in `cache/`, so reruns are quick.
-4. **Cluster each topic.** PCA, then UMAP to 5 dimensions, then HDBSCAN. We
+3. **Cluster each topic.** PCA, then UMAP to 5 dimensions, then HDBSCAN. We
    never set a number of clusters. Instead we try a range of HDBSCAN density
    settings and keep the one with the best DBCV score that also holds up when
    UMAP is rerun with other seeds. `--leiden` adds a Leiden cross-check.
-5. **Keywords.** c-TF-IDF per cluster with English and Spanish stopwords.
-6. **Name.** Gemma 4 E4B reads the *whole* cluster in one call, plus its
+4. **Keywords.** c-TF-IDF per cluster with English and Spanish stopwords.
+5. **Name.** Gemma 4 E4B reads the *whole* cluster in one call, plus its
    keywords and ~25 posts from neighbouring clusters for contrast, and returns
    `{theme, description, confidence}` as JSON. There is no chunking. If a
    cluster is too big for the context window, the log says so loudly and the
    theme is marked `Theme Truncated` in the output.
-7. **Merge.** Gemma looks at all theme names in a topic and merges the ones
+6. **Merge.** Gemma looks at all theme names in a topic and merges the ones
    that mean the same thing. There's no target count.
-8. **Noise posts.** Posts HDBSCAN left out go to the closest theme if they are
+7. **Noise posts.** Posts HDBSCAN left out go to the closest theme if they are
    similar enough (the bar is set from the data), otherwise to "Other".
-9. **Output** in `output/`:
+8. **Output** in `output/`:
    - `<name>.xlsx`: the posts with Topic, Cluster, Consolidated Theme, Theme
      Description and how the theme was assigned; a Theme Summary sheet with
      post counts and examples; a Run Log sheet with the chosen settings and
      timings.
-   - `<name>_duplicates.xlsx`: the duplicates with the Post_ID they copy.
    - `<name>_runlog.json`: the full sweep, scores and timings.
 
 The embedder and the LLM never run at the same time; each gets its own
