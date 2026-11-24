@@ -28,6 +28,14 @@ def model_path(repo, filename):
 
 @contextmanager
 def llama_server(model, args, port=config.PORT, timeout=600):
+    # A server left over from an earlier, interrupted run would answer our
+    # health check and we'd quietly talk to the wrong model.
+    try:
+        requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+        raise RuntimeError(f"Something is already listening on port {port}. Stop it "
+                           "(it's probably an old llama-server) or set SOV_PORT.")
+    except requests.ConnectionError:
+        pass
     cmd = [config.LLAMA_SERVER, "-m", str(model), "--port", str(port),
            "--host", "127.0.0.1", *args]
     log.info("Starting: %s", " ".join(cmd))
@@ -36,6 +44,7 @@ def llama_server(model, args, port=config.PORT, timeout=600):
     url = f"http://127.0.0.1:{port}"
     try:
         start = time.time()
+        time.sleep(1)
         while True:
             if proc.poll() is not None:
                 raise RuntimeError(f"llama-server exited early, see {logfile.name}")
