@@ -78,6 +78,7 @@ def run(topic_numbers=None, leiden=False, ctx=config.LLM_CTX, out_name=None):
     kept["Theme Description"] = None
     kept["Theme Assigned By"] = None
     kept["Theme Truncated"] = False
+    kept["Theme Similarity"] = np.nan
     with llm.start(ctx) as url:
         client = llm.Client(url, ctx)
         for num, (mask, texts, tv, labels, kw) in per_topic.items():
@@ -87,7 +88,7 @@ def run(topic_numbers=None, leiden=False, ctx=config.LLM_CTX, out_name=None):
                 named = themes.name_clusters(client, name, texts, tv, labels, kw)
             with timer("llm merge"):
                 final = themes.merge_themes(client, name, named, texts, tv, labels)
-            theme_of, floor, reassigned = themes.assign_noise(tv, labels, final)
+            theme_of, floor, reassigned, closeness = themes.assign_noise(tv, labels, final)
             desc = {t: d for t, d in final.values()}
             desc["Other"] = "Did not fit any theme in this topic closely enough."
             truncated_themes = {final[c][0] for c, n in named.items() if n["truncated"]}
@@ -99,6 +100,7 @@ def run(topic_numbers=None, leiden=False, ctx=config.LLM_CTX, out_name=None):
             kept.loc[rows, "Theme Assigned By"] = np.where(
                 labels >= 0, "cluster", np.where(reassigned, "nearest theme", "below floor"))
             kept.loc[rows, "Theme Truncated"] = [t in truncated_themes for t in theme_of]
+            kept.loc[rows, "Theme Similarity"] = np.round(closeness, 3)
 
             info["clusters"] = {int(c): {k: v for k, v in n.items()} | {"final_theme": final[c][0]}
                                 for c, n in named.items()}
@@ -116,8 +118,9 @@ def run(topic_numbers=None, leiden=False, ctx=config.LLM_CTX, out_name=None):
 def summary_table(kept):
     rows = []
     for (topic, theme), g in kept.groupby(["topic_clean", "Consolidated Theme"], sort=True):
-        clustered = g[g["Theme Assigned By"] == "cluster"]
-        examples = (clustered if len(clustered) else g)[config.TEXT_COL].astype(str).head(5)
+        # The most typical posts, skipping exact repeats so the examples differ.
+        typical = g.sort_values("Theme Similarity", ascending=False).drop_duplicates(config.TEXT_COL)
+        examples = typical[config.TEXT_COL].astype(str).head(5)
         row = {"Topic": topic, "Consolidated Theme": theme,
                "Description": g["Theme Description"].iloc[0],
                "Posts": len(g),

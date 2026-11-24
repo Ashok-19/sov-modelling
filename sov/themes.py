@@ -214,7 +214,7 @@ def assign_noise(vecs, labels, final):
     theme_of = np.array([final[l][0] if l >= 0 else None for l in labels], dtype=object)
     names = sorted({v[0] for v in final.values()})
     if not names:
-        return theme_of, None, np.zeros(len(labels), dtype=bool)
+        return theme_of, None, np.zeros(len(labels), dtype=bool), np.full(len(labels), np.nan)
     cents = []
     for name in names:
         m = vecs[theme_of == name].mean(axis=0)
@@ -235,4 +235,8 @@ def assign_noise(vecs, labels, final):
             reassigned[i] = True
         else:
             theme_of[i] = "Other"
-    return theme_of, floor, reassigned
+
+    # How close each post sits to its theme's centre; used to pick examples.
+    closeness = np.array([float(vecs[i] @ cents[name_idx[t]]) if t in name_idx else np.nan
+                          for i, t in enumerate(theme_of)])
+    return theme_of, floor, reassigned, closeness
