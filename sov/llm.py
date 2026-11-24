@@ -14,9 +14,11 @@ log = logging.getLogger(__name__)
 def server_args(ctx=config.LLM_CTX):
     # Flash attention plus a q8_0 KV cache is what lets a 128k window fit.
     # One slot, so the whole window is available to each request.
-    return ["-c", str(ctx), "-np", "1", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
-            "-ngl", config.LLM_GPU_LAYERS, "--jinja", "--reasoning-budget", "0",
-            "-b", "2048", "-ub", "512"]
+    args = ["-c", str(ctx), "-np", "1", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
+            "--jinja", "--reasoning", "off", "-b", "2048", "-ub", "512"]
+    if config.LLM_GPU_LAYERS:
+        args += ["-ngl", config.LLM_GPU_LAYERS]
+    return args
 
 
 def start(ctx=config.LLM_CTX):

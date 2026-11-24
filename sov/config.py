@@ -37,8 +37,9 @@ LLM_FILE = "gemma-4-E4B-it-Q4_K_M.gguf"
 # Context window for the naming model. Gemma 4 E4B supports 128k; we use as
 # much as the machine allows. Override with SOV_LLM_CTX if memory is tight.
 LLM_CTX = int(os.environ.get("SOV_LLM_CTX", 131072))
-# Layers to put on the 4 GB GPU. The rest (and the per-layer embeddings) stay in RAM.
-LLM_GPU_LAYERS = os.environ.get("SOV_LLM_NGL", "99")
+# Layers to put on the 4 GB GPU. Unset means let llama.cpp's --fit work it out,
+# which keeps whatever doesn't fit (layers or KV cache) in system RAM.
+LLM_GPU_LAYERS = os.environ.get("SOV_LLM_NGL")
 LLM_MAX_OUTPUT = 1024
 
 PORT = int(os.environ.get("SOV_PORT", 8091))
