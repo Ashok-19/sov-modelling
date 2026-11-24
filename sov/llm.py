@@ -29,16 +29,25 @@ def start(ctx=config.LLM_CTX):
     return llama_server(model_path(config.LLM_REPO, config.LLM_FILE), server_args(ctx))
 
 
+# Gemma 4 starts a hidden "thought" channel on its own even when the template
+# and server say thinking is off, which made short answers take 40-50s. An
+# empty thought block at the start of its turn makes it answer straight away.
+EMPTY_THOUGHT = "<|channel>thought\n<channel|>"
+
+
 class Client:
     def __init__(self, url, ctx=config.LLM_CTX):
         self.url = url
         self.ctx = ctx
 
-    def count_tokens(self, messages):
+    def _prompt(self, messages):
         r = requests.post(self.url + "/apply-template", json={"messages": messages}, timeout=120)
         r.raise_for_status()
-        prompt = r.json()["prompt"]
-        r = requests.post(self.url + "/tokenize", json={"content": prompt}, timeout=120)
+        return r.json()["prompt"] + EMPTY_THOUGHT
+
+    def count_tokens(self, messages):
+        r = requests.post(self.url + "/tokenize",
+                          json={"content": self._prompt(messages), "parse_special": True}, timeout=120)
         r.raise_for_status()
         return len(r.json()["tokens"])
 
@@ -46,19 +55,15 @@ class Client:
         return self.ctx - config.LLM_MAX_OUTPUT - 256
 
     def chat_json(self, messages, schema, name="answer"):
-        body = {
-            "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": config.LLM_MAX_OUTPUT,
-            "response_format": {"type": "json_schema",
-                                "json_schema": {"name": name, "schema": schema, "strict": True}},
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
-        r = requests.post(self.url + "/v1/chat/completions", json=body, timeout=3600)
+        """Send a chat and get back JSON that matches `schema`."""
+        body = {"prompt": self._prompt(messages), "json_schema": schema,
+                "temperature": 0.2, "n_predict": config.LLM_MAX_OUTPUT}
+        r = requests.post(self.url + "/completion", json=body, timeout=3600)
         r.raise_for_status()
         out = r.json()
-        timings = out.get("timings", {})
-        log.info("  LLM: %s prompt tokens, %s generated, %.0fs",
-                 out["usage"]["prompt_tokens"], out["usage"]["completion_tokens"],
-                 (timings.get("prompt_ms", 0) + timings.get("predicted_ms", 0)) / 1000)
-        return json.loads(out["choices"][0]["message"]["content"]), out["usage"]
+        t = out.get("timings", {})
+        log.info("  LLM %s: %s prompt tokens, %s generated, %.0fs", name,
+                 out["tokens_evaluated"], out["tokens_predicted"],
+                 (t.get("prompt_ms", 0) + t.get("predicted_ms", 0)) / 1000)
+        usage = {"prompt_tokens": out["tokens_evaluated"], "completion_tokens": out["tokens_predicted"]}
+        return json.loads(out["content"]), usage
