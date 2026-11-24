@@ -12,13 +12,17 @@ log = logging.getLogger(__name__)
 
 
 def server_args(ctx=config.LLM_CTX):
-    # Flash attention plus a q8_0 KV cache is what lets a 128k window fit.
-    # One slot, so the whole window is available to each request.
-    args = ["-c", str(ctx), "-np", "1", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
-            "--jinja", "--reasoning", "off", "-b", "2048", "-ub", "512"]
-    if config.LLM_GPU_LAYERS:
-        args += ["-ngl", config.LLM_GPU_LAYERS]
-    return args
+    # Flash attention plus a q8_0 KV cache is what lets a 128k window fit, and
+    # -ub 256 keeps the compute buffer small. One slot, so each request gets
+    # the whole window. See config.py for why some weights live in RAM.
+    to_cpu = "per_layer_token_embd=CPU"
+    n = config.LLM_CPU_FFN_LAYERS
+    if n:
+        layers = "|".join(str(i) for i in range(n))
+        to_cpu += rf",blk\.({layers})\.ffn_(up|gate|down)=CPU"
+    return ["-c", str(ctx), "-np", "1", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
+            "-ngl", "99", "-ot", to_cpu, "-b", "2048", "-ub", "256",
+            "--jinja", "--reasoning", "off"]
 
 
 def start(ctx=config.LLM_CTX):

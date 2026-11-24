@@ -60,4 +60,4 @@ You also need a CUDA build of `llama-server` on your PATH (or set
 
 Useful options: `--leiden` for the cross-check, `--ctx 65536` to use a
 smaller LLM context if memory is short, `--out name` to pick the output name.
-`SOV_LLM_NGL` sets how many Gemma layers go on the GPU.
+`SOV_LLM_CPU_FFN_LAYERS` sets how many layers keep their feed-forward weights in RAM (30 by default, so the 128k context fits in 4 GB).
