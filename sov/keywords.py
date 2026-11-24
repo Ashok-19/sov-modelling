@@ -39,7 +39,10 @@ def ctfidf_keywords(texts, labels, top_n=12):
     docs = [" ".join(_for_counting(t) for t, l in zip(texts, labels) if l == c) for c in clusters]
     vec = CountVectorizer(stop_words=STOP_WORDS, ngram_range=(1, 2), min_df=1,
                           token_pattern=r"(?u)\b[^\W\d_]{3,}\b")
-    counts = vec.fit_transform(docs).toarray().astype(float)
+    try:
+        counts = vec.fit_transform(docs).toarray().astype(float)
+    except ValueError:  # nothing but stopwords, emoji or links
+        return {c: [] for c in clusters}
     tf = counts / np.maximum(counts.sum(axis=1, keepdims=True), 1)
     avg_words = counts.sum() / len(clusters)
     idf = np.log(1 + avg_words / np.maximum(counts.sum(axis=0), 1))

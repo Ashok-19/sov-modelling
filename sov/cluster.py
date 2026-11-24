@@ -179,8 +179,16 @@ def leiden_check(vecs, hdb_labels, k=15):
             g, leidenalg.RBConfigurationVertexPartition, weights="weight",
             resolution_parameter=res, seed=s).membership) for s in range(5)]
         stab = np.mean([adjusted_rand_score(runs[0], r) for r in runs[1:]])
+        # Lots of tiny clusters are trivially "stable", so skip a partition
+        # where most posts sit in clusters below HDBSCAN's smallest size (5).
+        sizes = np.bincount(runs[0])
+        if (sizes[runs[0]] < 5).mean() > 0.5:
+            continue
         if best is None or stab >= best["stability"]:  # ties go to the finer split
             best = {"resolution": res, "stability": float(stab), "labels": runs[0]}
+    if best is None:
+        return {"resolution": None, "stability": None, "n_clusters": 1, "ari_vs_hdbscan": None,
+                "note": "every resolution gave mostly tiny clusters"}
     mask = hdb_labels >= 0
     return {"resolution": best["resolution"], "stability": best["stability"],
             "n_clusters": int(best["labels"].max() + 1),

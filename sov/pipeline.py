@@ -4,11 +4,10 @@ import json
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-from pathlib import Path
 
 from . import cluster, config, data, embed, llm, progress, themes
 from .keywords import ctfidf_keywords
@@ -50,7 +49,7 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
     with timer("load"):
         df = data.load(input_path, sheet)
         available = data.list_topics(df)
-        wanted = topic_numbers or list(available)
+        wanted = sorted(set(topic_numbers)) if topic_numbers else list(available)
         missing = [t for t in wanted if t not in available]
         if missing:
             raise SystemExit(f"Unknown topic number(s) {missing}. Available: {available}")
