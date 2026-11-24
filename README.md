@@ -100,9 +100,9 @@ or saving the output to a file.
    same way, until a split stops being stable.
 4. **Keywords** per cluster (c-TF-IDF), used as hints for the next step.
 5. **Name** each cluster with Gemma 4 E4B. It reads the whole cluster in one
-   call (128k context, no chunking), plus some posts from nearby clusters for
-   contrast. If a cluster is ever too big to fit, the log says so and the
-   theme is flagged in the output.
+   call (128k context, no chunking), and only that cluster's posts. Gemma
+   thinks before it answers (up to 32k tokens). If a cluster is ever too big
+   to fit, the log says so and the theme is flagged in the output.
 6. **Merge** themes that are really the same. Each theme is compared with
    its nearest neighbours, using example posts from both, and merged only
    when they make the same point. There's no target count.
@@ -122,7 +122,7 @@ The embedding model and the LLM never run at the same time.
 | `--name name` | output file name |
 | `--leiden` | also run Leiden clustering as a cross-check |
 | `--no-thinking` | switch off Gemma's thinking step: roughly 10× faster LLM step, answers may be weaker |
-| `--thinking-budget 4096` | cap on how long Gemma thinks per answer |
+| `--thinking-budget 32768` | ceiling on how long Gemma may think per answer (it rarely needs more than 1k) |
 | `--ctx 65536` | smaller LLM context if memory is short |
 | `--no-ui` | plain logs instead of the live display |
 

@@ -1,7 +1,7 @@
 """Naming clusters, merging names that mean the same thing, and placing noise posts.
 
-Each cluster is named in a single LLM call that sees every post in it. We never
-split a cluster into chunks. If a cluster is too big for the context window we
+Each cluster is named in a single LLM call that sees every post in it, and only
+posts from that cluster. We never split a cluster into chunks. If a cluster is too big for the context window we
 send as many posts as fit (most central first), log a warning, and mark the
 theme as truncated in the output so nobody mistakes it for a full read.
 """
@@ -13,8 +13,6 @@ import numpy as np
 from . import progress
 
 log = logging.getLogger(__name__)
-
-N_CONTRAST = 25
 
 NAME_SCHEMA = {
     "type": "object",
@@ -66,18 +64,17 @@ def _fmt(posts):
     return "\n".join(f"[{i + 1}] {p.strip()}" for i, p in enumerate(posts))
 
 
-def _name_messages(topic, keywords, posts, contrast):
+def _name_messages(topic, keywords, posts):
     user = (
         f"Parent topic: {topic}\n\n"
         f"All posts in this group were placed together by a clustering step. "
         f"Top keywords for the group: {', '.join(keywords)}\n\n"
         f"=== POSTS IN THIS GROUP ({len(posts)}) ===\n{_fmt(posts)}\n\n"
-        f"=== CONTRAST: posts from neighbouring groups (NOT in this group) ===\n{_fmt(contrast)}\n\n"
         "Read every post in the group. Then give:\n"
         "- theme: a short, specific name (3 to 8 words) for what these posts have in common. "
         "Name the actual claim, product, person, event or concern (for example 'Ivermectin "
-        "promoted as an MS cure' rather than 'Alternative treatments'), specific enough to tell "
-        "this group apart from the contrast posts. Avoid generic names like 'MS discussion', "
+        "promoted as an MS cure' rather than 'Alternative treatments'). Avoid generic names "
+        "like 'MS discussion', "
         "'Patient experiences' or 'Misinformation about MS'.\n"
         "- description: one or two sentences on what the posts talk about.\n"
         "- confidence: from 0 to 1, how clearly the posts share one theme."
@@ -89,7 +86,6 @@ def name_clusters(client, topic, texts, vecs, labels, keywords):
     """Name every cluster in a topic. Returns {label: info dict}."""
     cents = centroids(vecs, labels)
     ids = list(cents)
-    cmat = np.stack([cents[c] for c in ids])
     results = {}
     progress.ui.task(f"Naming clusters: {topic}", len(ids))
     for c in ids:
@@ -97,20 +93,7 @@ def name_clusters(client, topic, texts, vecs, labels, keywords):
         order = idx[np.argsort(-(vecs[idx] @ cents[c]))]  # most central first
         posts = [texts[i] for i in order]
 
-        # Contrast posts: the most typical posts of the nearest other clusters.
-        near = [ids[j] for j in np.argsort(-(cmat @ cents[c])) if ids[j] != c]
-        contrast = []
-        if near:
-            per = max(1, N_CONTRAST // min(len(near), 5))
-            for o in near:
-                oidx = np.where(labels == o)[0]
-                oidx = oidx[np.argsort(-(vecs[oidx] @ cents[o]))][:per]
-                contrast += [texts[i] for i in oidx]
-                if len(contrast) >= N_CONTRAST:
-                    break
-            contrast = contrast[:N_CONTRAST]
-
-        messages = _name_messages(topic, keywords.get(c, []), posts, contrast)
+        messages = _name_messages(topic, keywords.get(c, []), posts)
         n_tokens = client.count_tokens(messages)
         truncated = False
         if n_tokens > client.prompt_budget():
@@ -118,7 +101,7 @@ def name_clusters(client, topic, texts, vecs, labels, keywords):
             keep = len(posts)
             while n_tokens > client.prompt_budget() and keep > 1:
                 keep = int(keep * client.prompt_budget() / n_tokens * 0.97)
-                messages = _name_messages(topic, keywords.get(c, []), posts[:keep], contrast)
+                messages = _name_messages(topic, keywords.get(c, []), posts[:keep])
                 n_tokens = client.count_tokens(messages)
             log.warning("CLUSTER TOO LARGE FOR CONTEXT: topic %s cluster %d has %d posts; "
                         "only the %d most central fit in %d tokens. Marked as truncated.",

@@ -45,8 +45,10 @@ LLM_CTX = int(os.environ.get("SOV_LLM_CTX", 131072))
 LLM_CPU_FFN_LAYERS = int(os.environ.get("SOV_LLM_CPU_FFN_LAYERS", 30))
 LLM_MAX_OUTPUT = 1024
 # Let Gemma think before it answers. Better answers, but each call takes longer.
-# Set SOV_LLM_THINKING=0 to switch it off. The budget caps how long it thinks.
+# Set SOV_LLM_THINKING=0 to switch it off. The budget is a ceiling, not a target:
+# it's set high so the model is never cut off mid-thought (in practice it uses
+# under 1k tokens per answer). It comes out of the same 128k window as the posts.
 LLM_THINKING = os.environ.get("SOV_LLM_THINKING", "1") != "0"
-LLM_THINKING_BUDGET = int(os.environ.get("SOV_LLM_THINKING_BUDGET", 4096))
+LLM_THINKING_BUDGET = int(os.environ.get("SOV_LLM_THINKING_BUDGET", 32768))
 
 PORT = int(os.environ.get("SOV_PORT", 8091))
