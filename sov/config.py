@@ -28,9 +28,13 @@ LLAMA_SERVER = os.environ.get("LLAMA_SERVER", "llama-server")
 EMBED_REPO = "Qwen/Qwen3-Embedding-4B-GGUF"
 EMBED_FILE = "Qwen3-Embedding-4B-Q5_K_M.gguf"
 EMBED_INSTRUCTION = (
-    "Instruct: Identify the main topic or theme of the given social media post "
-    "about multiple sclerosis treatments\nQuery: "
+    "Instruct: Identify the main claim, topic or theme of the given social media post "
+    "about multiple sclerosis (MS)\nQuery: "
 )
+# Posts with fewer real words than this ("This is interesting", "OMG!") say too
+# little to shape a cluster. They're left out of clustering and naming, then
+# placed in their nearest theme afterwards, the same way as noise posts.
+MIN_WORDS_TO_CLUSTER = 5
 
 LLM_REPO = "unsloth/gemma-4-E4B-it-GGUF"
 LLM_FILE = "gemma-4-E4B-it-Q4_K_M.gguf"

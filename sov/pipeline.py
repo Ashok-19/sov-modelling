@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -74,8 +75,14 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
         ui.topic(name, status="running", step="clustering")
         ui.task(f"Clustering: {name}", None)
         t0 = time.time()
+        words = np.array([len(re.findall(r"[^\W\d_]{2,}", t)) for t in texts])
+        substantive = words >= config.MIN_WORDS_TO_CLUSTER
         with timer("cluster"):
-            labels, chosen, sweep = cluster.cluster_topic(tv)
+            labels = np.full(len(texts), -1)
+            sub_labels, chosen, sweep = cluster.cluster_topic(tv[substantive])
+            labels[substantive] = sub_labels
+        log.info("%d short posts (under %d words) held back from clustering",
+                 int((~substantive).sum()), config.MIN_WORDS_TO_CLUSTER)
         ui.topic(name, status="waiting", step="clustered, waiting for LLM",
                  clusters=labels.max() + 1, noise=f"{(labels < 0).mean():.0%}")
         info = {"posts": len(texts), "hdbscan": chosen, "sweep": sweep}
@@ -85,7 +92,7 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
                 log.info("Leiden cross-check: %s", info["leiden"])
         with timer("keywords"):
             kw = ctfidf_keywords(texts, labels)
-        per_topic[num] = (mask, texts, tv, labels, kw, time.time() - t0)
+        per_topic[num] = (mask, texts, tv, labels, kw, substantive, time.time() - t0)
         run_log["topics"][name] = info
 
     kept["Cluster"] = -1
@@ -99,7 +106,7 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
         client = llm.Client(url, ctx)
         ui.set_stage("Naming and merging themes (Gemma 4 E4B" +
                      (", thinking on)" if config.LLM_THINKING else ")"))
-        for num, (mask, texts, tv, labels, kw, cluster_time) in per_topic.items():
+        for num, (mask, texts, tv, labels, kw, substantive, cluster_time) in per_topic.items():
             name = available[num]
             info = run_log["topics"][name]
             t0 = time.time() - cluster_time
@@ -118,8 +125,10 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
             kept.loc[rows, "Cluster"] = labels
             kept.loc[rows, "Consolidated Theme"] = theme_of
             kept.loc[rows, "Theme Description"] = [desc[t] for t in theme_of]
-            kept.loc[rows, "Theme Assigned By"] = np.where(
-                labels >= 0, "cluster", np.where(reassigned, "nearest theme", "below floor"))
+            how = np.where(labels >= 0, "cluster",
+                           np.where(reassigned, "nearest theme", "below floor"))
+            how = np.where(~substantive, np.char.add("short post, ", how.astype(str)), how)
+            kept.loc[rows, "Theme Assigned By"] = how
             kept.loc[rows, "Theme Truncated"] = [t in truncated_themes for t in theme_of]
             kept.loc[rows, "Theme Similarity"] = np.round(closeness, 3)
 
@@ -135,22 +144,34 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
     run_log["timings_s"] = {k: round(v, 1) for k, v in timer.times.items()}
     run_log["finished"] = datetime.now().isoformat(timespec="seconds")
     out_name = out_name or f"sov_themes_{datetime.now():%Y%m%d_%H%M}"
+    # Rows we never cluster (the Non-MS / Noise topic and posts with no topic)
+    # still go in the output, untouched, so it has every input row.
+    skipped = df[~df["topic_num"].isin(list(available))].copy()
+    skipped["Theme Assigned By"] = np.where(skipped["topic_clean"].isna() | skipped["topic_num"].isna(),
+                                            "skipped (no topic)", "skipped (noise topic)")
+    skipped["Cluster"] = -1
+    skipped["Theme Truncated"] = False
+    out = pd.concat([kept, skipped]).sort_index()
+    log.info("%d rows not clustered (noise topic or no topic) kept in the output as they are",
+             len(skipped))
+
     ui.set_stage("Writing output")
-    write_outputs(kept, run_log, output_dir, out_name)
+    write_outputs(out, run_log, output_dir, out_name)
     ui.set_stage("Finished")
     return kept, run_log
 
 
 def summary_table(kept):
     rows = []
-    for (topic, theme), g in kept.groupby(["topic_clean", "Consolidated Theme"], sort=True):
+    themed = kept[kept["Consolidated Theme"].notna()]
+    for (topic, theme), g in themed.groupby(["topic_clean", "Consolidated Theme"], sort=True):
         # The most typical posts, skipping exact repeats so the examples differ.
         typical = g.sort_values("Theme Similarity", ascending=False).drop_duplicates(config.TEXT_COL)
         examples = typical[config.TEXT_COL].astype(str).head(5)
         row = {"Topic": topic, "Consolidated Theme": theme,
                "Description": g["Theme Description"].iloc[0],
                "Posts": len(g),
-               "From noise": int((g["Theme Assigned By"] == "nearest theme").sum()),
+               "From noise": int(g["Theme Assigned By"].str.endswith("nearest theme").sum()),
                "Truncated in LLM step": bool(g["Theme Truncated"].any())}
         for i, ex in enumerate(examples, 1):
             row[f"Example {i}"] = ex[:1000]

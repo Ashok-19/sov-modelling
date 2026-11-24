@@ -33,6 +33,9 @@ def start(ctx=config.LLM_CTX):
 # With thinking switched off, Gemma 4 still opens a "thought" channel on its
 # own. An empty thought block at the start of its turn makes it answer straight
 # away. Only used when config.LLM_THINKING is off.
+# A fixed seed so the same input gives the same names and merge decisions.
+SEED = 42
+
 EMPTY_THOUGHT = "<|channel>thought\n<channel|>"
 
 
@@ -64,12 +67,29 @@ class Client:
         """
         for attempt in range(1, tries + 1):
             try:
-                return self._chat_json_once(messages, schema, name)
+                answer, usage = self._chat_json_once(messages, schema, name)
+                empty = [k for k, v in answer.items() if isinstance(v, str) and not v.strip()]
+                if empty:
+                    raise ValueError(f"empty field(s) {empty}")
+                return answer, usage
             # A lost connection means the server itself has gone, so we let that
             # stop the run rather than fill the output with placeholders.
             except (ValueError, KeyError, requests.HTTPError, requests.Timeout) as e:
                 log.warning("LLM %s answer unusable (try %d of %d): %s", name, attempt, tries, e)
         raise ValueError(f"no usable answer from the LLM for {name}")
+
+    def chat_json_no_thinking(self, messages, schema, name="answer"):
+        """Same as chat_json but with thinking off for this one call.
+
+        A last resort when the thinking model keeps failing on a prompt: a
+        plain answer is better than no name at all.
+        """
+        saved = config.LLM_THINKING
+        config.LLM_THINKING = False
+        try:
+            return self.chat_json(messages, schema, name, tries=1)
+        finally:
+            config.LLM_THINKING = saved
 
     def _chat_json_once(self, messages, schema, name):
         """One request.
@@ -78,7 +98,7 @@ class Client:
         apart from the answer, so the JSON schema only applies to the answer.
         """
         if config.LLM_THINKING:
-            body = {"messages": messages, "temperature": 0.2,
+            body = {"messages": messages, "temperature": 0.2, "seed": SEED,
                     "max_tokens": config.LLM_THINKING_BUDGET + config.LLM_MAX_OUTPUT,
                     "response_format": {"type": "json_schema",
                                         "json_schema": {"name": name, "schema": schema, "strict": True}},
@@ -90,7 +110,7 @@ class Client:
             content = out["choices"][0]["message"]["content"]
         else:
             body = {"prompt": self._prompt(messages), "json_schema": schema,
-                    "temperature": 0.2, "n_predict": config.LLM_MAX_OUTPUT}
+                    "temperature": 0.2, "seed": SEED, "n_predict": config.LLM_MAX_OUTPUT}
             r = requests.post(self.url + "/completion", json=body, timeout=3600)
             r.raise_for_status()
             out = r.json()

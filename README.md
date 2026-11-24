@@ -63,9 +63,11 @@ together (see `TOPIC_ALIASES` in `sov/config.py`).
 In the output folder (`output/` unless you pass `-o`):
 
 - `<name>.xlsx`
-  - **Posts:** every input row plus Topic, Cluster, Consolidated Theme, Theme
-    Description, how the theme was assigned, and how close the post is to
-    its theme.
+  - **Posts:** the rows of the topics you ran plus Topic, Cluster,
+    Consolidated Theme, Theme Description, how the theme was assigned, and how
+    close the post is to its theme. Rows from the Non-MS / Noise topic (and
+    any without a topic) are included too, untouched, with blank theme
+    columns and "skipped" in Theme Assigned By.
   - **Theme Summary:** one row per theme with its post count, description
     and the five most typical posts.
   - **Run Log:** the clustering settings and scores per topic, and how long
