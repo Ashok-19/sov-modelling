@@ -9,6 +9,10 @@ which isn't much use for share of voice. So the split is applied recursively:
 each cluster gets its own UMAP and sweep, and is split again only if that
 split is valid and holds up across seeds. Where it doesn't, we stop. The
 number of themes falls out of that, it's never set.
+
+This tends to give fairly fine clusters. That's deliberate: the LLM merge step
+afterwards joins the ones that are really the same theme, which is much easier
+to get right than splitting a cluster that's too broad.
 """
 
 import json
@@ -27,7 +31,6 @@ log = logging.getLogger(__name__)
 
 SEED = 42
 STABILITY_SEEDS = (7, 13, 101)
-TOP_FOR_STABILITY = 6
 # A setting that throws away most posts as noise can score well on DBCV
 # (a couple of tight blobs) while telling us little, so we prefer candidates
 # that keep at least half the posts when any exist.
@@ -66,6 +69,18 @@ def fit(x, mcs, ms):
     return labels, dbcv
 
 
+def agreement(a, b):
+    """Adjusted Rand index between two labellings, on posts both put in a cluster.
+
+    Counting noise as its own label made a split look unstable just because a
+    few borderline posts flipped in and out of noise between seeds.
+    """
+    both = (a >= 0) & (b >= 0)
+    if both.sum() < 10:
+        return 0.0
+    return adjusted_rand_score(a[both], b[both])
+
+
 def best_split(vecs):
     """Sweep HDBSCAN settings on one group of posts and return the best split.
 
@@ -85,18 +100,19 @@ def best_split(vecs):
         return None, None, _strip(sweep)
 
     pool = [s for s in valid if s["noise_frac"] <= MAX_NOISE] or valid
-    pool.sort(key=lambda s: s["dbcv"], reverse=True)
 
     # Stability: refit the same settings on UMAP runs with other seeds and see
-    # how well the labels agree with the main run.
+    # how well the labels agree with the main run. Every candidate is checked;
+    # looking only at the best few by DBCV sometimes missed every stable one,
+    # and a whole topic collapsed into a single theme.
     others = [reduce(vecs, s) for s in STABILITY_SEEDS]
-    for s in pool[:TOP_FOR_STABILITY]:
-        aris = [adjusted_rand_score(s["labels"], fit(xo, s["min_cluster_size"], s["min_samples"])[0])
-                for xo in others]
-        s["stability"] = float(np.mean(aris))
+    for s in pool:
+        s["stability"] = float(np.mean(
+            [agreement(s["labels"], fit(xo, s["min_cluster_size"], s["min_samples"])[0])
+             for xo in others]))
         s["score"] = s["dbcv"] * s["stability"]
 
-    stable = [s for s in pool[:TOP_FOR_STABILITY] if s["stability"] >= MIN_STABILITY]
+    stable = [s for s in pool if s["stability"] >= MIN_STABILITY]
     if not stable:
         return None, None, _strip(sweep)
     best = max(stable, key=lambda s: s["score"])
