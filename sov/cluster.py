@@ -21,6 +21,8 @@ import umap
 from sklearn.decomposition import PCA
 from sklearn.metrics import adjusted_rand_score
 
+from . import progress
+
 log = logging.getLogger(__name__)
 
 SEED = 42
@@ -115,6 +117,7 @@ def cluster_topic(vecs):
     todo = [("all", np.arange(n))]
     while todo:
         path, idx = todo.pop(0)
+        progress.ui.advance(description=f"Clustering: trying to split group {path} ({len(idx)} posts)")
         sub, chosen, sweep = best_split(vecs[idx]) if len(idx) >= MIN_SPLIT_SIZE else (None, None, None)
         if top_sweep is None:
             top_sweep = sweep

@@ -10,7 +10,7 @@ import logging
 import numpy as np
 import requests
 
-from . import config
+from . import config, progress
 from .server import llama_server, model_path
 
 log = logging.getLogger(__name__)
@@ -65,6 +65,7 @@ def embed_posts(texts):
     if todo:
         model = model_path(config.EMBED_REPO, config.EMBED_FILE)
         with llama_server(model, server_args()) as url:
+            progress.ui.task("Embedding posts", len(todo))
             for i in range(0, len(todo), BATCH):
                 chunk = todo[i:i + BATCH]
                 r = requests.post(url + "/v1/embeddings",
@@ -72,6 +73,7 @@ def embed_posts(texts):
                 r.raise_for_status()
                 for (k, _), item in zip(chunk, sorted(r.json()["data"], key=lambda d: d["index"])):
                     cache[k] = np.asarray(item["embedding"], dtype=np.float32)
+                progress.ui.advance(len(chunk))
                 if (i // BATCH) % 20 == 0:
                     log.info("  embedded %d / %d", min(i + BATCH, len(todo)), len(todo))
         _save_cache(cache)

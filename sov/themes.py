@@ -10,6 +10,8 @@ import logging
 
 import numpy as np
 
+from . import progress
+
 log = logging.getLogger(__name__)
 
 N_CONTRAST = 25
@@ -89,6 +91,7 @@ def name_clusters(client, topic, texts, vecs, labels, keywords):
     ids = list(cents)
     cmat = np.stack([cents[c] for c in ids])
     results = {}
+    progress.ui.task(f"Naming clusters: {topic}", len(ids))
     for c in ids:
         idx = np.where(labels == c)[0]
         order = idx[np.argsort(-(vecs[idx] @ cents[c]))]  # most central first
@@ -125,6 +128,7 @@ def name_clusters(client, topic, texts, vecs, labels, keywords):
         results[c] = {**answer, "size": len(posts), "prompt_tokens": n_tokens,
                       "truncated": truncated, "keywords": keywords.get(c, [])}
         log.info("  -> %s (confidence %.2f)", answer["theme"], answer["confidence"])
+        progress.ui.advance()
     return results
 
 
@@ -164,6 +168,7 @@ def merge_themes(client, topic, named, texts, vecs, labels):
             c = parent[c]
         return c
 
+    progress.ui.task(f"Checking theme pairs for merges: {topic}", len(pairs))
     for a, b in sorted(pairs):
         side = lambda c: (f"Theme: {named[c]['theme']}\nDescription: {named[c]['description']}\n"
                           f"Example posts:\n{_fmt(_examples(texts, vecs, labels, c, cents))}")
@@ -178,6 +183,7 @@ def merge_themes(client, topic, named, texts, vecs, labels):
         answer, _ = client.chat_json(messages, SAME_SCHEMA, "same_theme")
         log.info("  %s  vs  %s: %s (%s)", named[a]["theme"], named[b]["theme"],
                  "same" if answer["same_theme"] else "different", answer["reason"][:120])
+        progress.ui.advance()
         if answer["same_theme"]:
             parent[root(b)] = root(a)
 

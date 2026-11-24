@@ -19,8 +19,17 @@ def topic_number(name):
     return int(m.group(1)) if m else None
 
 
-def load(path=config.DATA_FILE):
-    df = pd.read_excel(path, sheet_name=config.SHEET)
+def load(path=config.DATA_FILE, sheet=config.SHEET):
+    """Read the posts from an Excel file (.xlsx/.xls) or a CSV."""
+    path = str(path)
+    if path.lower().endswith(".csv"):
+        df = pd.read_csv(path)
+    else:
+        df = pd.read_excel(path, sheet_name=sheet)
+    missing = [c for c in (config.ID_COL, config.TEXT_COL, config.TOPIC_COL) if c not in df.columns]
+    if missing:
+        raise SystemExit(f"{path} is missing column(s) {missing}. It needs the same columns "
+                         f"as the original sheet: {config.ID_COL}, {config.TEXT_COL}, {config.TOPIC_COL}.")
     df["topic_clean"] = df[config.TOPIC_COL].map(clean_topic)
     df["topic_num"] = df["topic_clean"].map(topic_number)
     return df

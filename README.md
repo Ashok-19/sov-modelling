@@ -1,64 +1,134 @@
 # Share of voice: sub-themes within topics
 
-Takes the classified social listening file and, inside each topic, groups the
-posts into sub-themes and gives each group a plain-English name and
-description. Everything runs on the laptop: no cloud APIs.
+Takes a social listening file where every post already has a topic, and inside
+each topic groups the posts into sub-themes. Each theme gets a short name and
+a description. Everything runs on your own machine; nothing is sent to a cloud
+service.
 
-The plan behind it is in [docs/pipeline-plan.md](docs/pipeline-plan.md).
+## Quick start
+
+```bash
+# 1. once: create a virtual environment and install the packages
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2. see what you can pass in
+python run.py --help
+
+# 3. run it
+python run.py --list-topics              # topics found in the input file
+python run.py -t 9                       # just topic 9
+python run.py -t 5 9 11                  # a few topics
+python run.py                            # every topic
+python run.py -i my_posts.csv -o results -t 9   # your own file and output folder
+```
+
+The first run downloads the two models (about 7.5 GB in total) into `~/models`.
+After that it works offline.
+
+## What you need
+
+- **Python 3.10 or newer.**
+- **An NVIDIA GPU** with CUDA. 4 GB of VRAM is enough; 16 GB of RAM is
+  recommended.
+- **llama.cpp's `llama-server`, built with CUDA,** on your `PATH`. If you don't
+  have it:
+
+  ```bash
+  git clone https://github.com/ggml-org/llama.cpp
+  cd llama.cpp
+  cmake -B build -DGGML_CUDA=ON && cmake --build build --config Release -j
+  # then put build/bin on your PATH, or point LLAMA_SERVER at build/bin/llama-server
+  ```
+
+## Input file
+
+An Excel file (`.xlsx`) or a CSV with the same columns as the original sheet.
+Three columns are used:
+
+| Column | What it holds |
+| --- | --- |
+| `Post_ID` | an id for each post |
+| `Cleaned Post Content` | the post text (used exactly as it is) |
+| `topics` | the topic, numbered like `9. Diagnosis & Healthcare Navigation` |
+
+All other columns are carried through to the output untouched. For Excel, the
+sheet is `Master Data` unless you pass `--sheet`. Topics called "Non-MS /
+Noise" are skipped, and a few spelling variants of topic names are folded
+together (see `TOPIC_ALIASES` in `sov/config.py`).
+
+## Output
+
+In the output folder (`output/` unless you pass `-o`):
+
+- `<name>.xlsx`
+  - **Posts:** every input row plus Topic, Cluster, Consolidated Theme, Theme
+    Description, how the theme was assigned, and how close the post is to
+    its theme.
+  - **Theme Summary:** one row per theme with its post count, description
+    and the five most typical posts.
+  - **Run Log:** the clustering settings and scores per topic, and how long
+    each stage took.
+- `<name>_runlog.json`: the same, with every setting that was tried.
+
+`<name>` is `sov_themes_<date>_<time>` unless you pass `--name`. A full log of
+every run is kept in `cache/run.log`.
+
+## What you see while it runs
+
+A live display with:
+
+- the topics and where each one is (clustering, naming, merging, done),
+  with its cluster count, theme count and noise share;
+- a progress bar with a time estimate for the current step;
+- GPU memory, GPU load and RAM, so you can see if the machine is struggling;
+- the latest events: settings chosen, each theme as it's named, merge
+  decisions, and any warnings in yellow or errors in red.
+
+Add `--no-ui` for plain log lines instead, for example when running over SSH
+or saving the output to a file.
 
 ## How it works
 
-1. **Load.** Read `data/ocrevus_ms_social_listening_classified.xlsx` (sheet
-   "Master Data") and fold topic spelling variants into one name. The
-   "Non-MS / Noise" topic is skipped. Post text is never edited.
-2. **Embed.** Qwen3-Embedding-4B (GGUF, Q5_K_M) in llama.cpp with last-token
-   pooling. Every post gets the same English instruction in front of it.
-   Vectors are L2-normalised and cached in `cache/`, so reruns are quick.
-3. **Cluster each topic.** PCA, then UMAP to 5 dimensions, then HDBSCAN. We
-   never set a number of clusters. Instead we try a range of HDBSCAN density
-   settings and keep the one with the best DBCV score that also holds up when
-   UMAP is rerun with other seeds. `--leiden` adds a Leiden cross-check.
-4. **Keywords.** c-TF-IDF per cluster with English and Spanish stopwords.
-5. **Name.** Gemma 4 E4B reads the *whole* cluster in one call, plus its
-   keywords and ~25 posts from neighbouring clusters for contrast, and returns
-   `{theme, description, confidence}` as JSON. There is no chunking. If a
-   cluster is too big for the context window, the log says so loudly and the
-   theme is marked `Theme Truncated` in the output.
-6. **Merge.** Gemma looks at all theme names in a topic and merges the ones
-   that mean the same thing. There's no target count.
-7. **Noise posts.** Posts HDBSCAN left out go to the closest theme if they are
-   similar enough (the bar is set from the data), otherwise to "Other".
-8. **Output** in `output/`:
-   - `<name>.xlsx`: the posts with Topic, Cluster, Consolidated Theme, Theme
-     Description and how the theme was assigned; a Theme Summary sheet with
-     post counts and examples; a Run Log sheet with the chosen settings and
-     timings.
-   - `<name>_runlog.json`: the full sweep, scores and timings.
+1. **Load** the file and tidy the topic names.
+2. **Embed** every post with Qwen3-Embedding-4B (in llama.cpp, fully on the
+   GPU). Vectors are cached in `cache/`, so a rerun only embeds new posts.
+3. **Cluster each topic.** UMAP, then HDBSCAN. No number of clusters is ever
+   set. A sweep of HDBSCAN settings is scored on DBCV and on how stable the
+   result is across random seeds. Each cluster is then split again in the
+   same way, until a split stops being stable.
+4. **Keywords** per cluster (c-TF-IDF), used as hints for the next step.
+5. **Name** each cluster with Gemma 4 E4B. It reads the whole cluster in one
+   call (128k context, no chunking), plus some posts from nearby clusters for
+   contrast. If a cluster is ever too big to fit, the log says so and the
+   theme is flagged in the output.
+6. **Merge** themes that are really the same. Each theme is compared with
+   its nearest neighbours, using example posts from both, and merged only
+   when they make the same point. There's no target count.
+7. **Leftover posts** that HDBSCAN called noise go to the nearest theme if
+   they're close enough, otherwise to "Other".
 
-The embedder and the LLM never run at the same time; each gets its own
-llama-server that is shut down when its stage ends.
+The embedding model and the LLM never run at the same time.
 
-## Setup
+## Options worth knowing
 
-```bash
-python3 -m venv --system-site-packages .venv
-.venv/bin/pip install -r requirements.txt
-```
+| Option | What it does |
+| --- | --- |
+| `-t 5 9 11` | only these topic numbers (default: all) |
+| `-i file.xlsx` / `-i file.csv` | input file |
+| `--sheet "Master Data"` | Excel sheet to read |
+| `-o folder` | output folder |
+| `--name name` | output file name |
+| `--leiden` | also run Leiden clustering as a cross-check |
+| `--no-thinking` | switch off Gemma's thinking step: roughly 10× faster LLM step, answers may be weaker |
+| `--thinking-budget 4096` | cap on how long Gemma thinks per answer |
+| `--ctx 65536` | smaller LLM context if memory is short |
+| `--no-ui` | plain logs instead of the live display |
 
-You also need a CUDA build of `llama-server` on your PATH (or set
-`LLAMA_SERVER`). The two GGUF models download into `~/models` on first use
-(set `SOV_MODELS_DIR` to change that).
+Environment variables for unusual setups: `SOV_MODELS_DIR` (where models are
+kept), `LLAMA_SERVER` (path to llama-server), `SOV_PORT` (port it uses), and
+`SOV_LLM_CPU_FFN_LAYERS` (how many Gemma layers keep their feed-forward weights
+in RAM; 30 lets the 128k context fit in 4 GB, so use 0 on a bigger GPU).
 
-## Running
-
-```bash
-.venv/bin/python -m sov --list-topics      # what topics are in the file
-.venv/bin/python -m sov --topics 9         # one topic
-.venv/bin/python -m sov --topics 5 9 11    # a few
-.venv/bin/python -m sov                    # all of them
-```
-
-Useful options: `--leiden` for the cross-check, `--ctx 65536` to use a
-smaller LLM context if memory is short, `--out name` to pick the output name.
-Gemma thinks before it answers by default (`SOV_LLM_THINKING=0` turns that off, `SOV_LLM_THINKING_BUDGET` caps it).
-`SOV_LLM_CPU_FFN_LAYERS` sets how many layers keep their feed-forward weights in RAM (30 by default, so the 128k context fits in 4 GB).
+The original plan is in [docs/pipeline-plan.md](docs/pipeline-plan.md).
