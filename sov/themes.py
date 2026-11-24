@@ -45,7 +45,7 @@ MERGE_SCHEMA = {
 
 SYSTEM = (
     "You are an analyst reviewing social media posts about multiple sclerosis (MS) and "
-    "its treatments, such as Ocrevus. Posts are in English or Spanish. Always answer in English."
+    "its treatments, such as Ocrevus. Answer in English."
 )
 
 
