@@ -15,8 +15,6 @@ from .server import llama_server, model_path
 
 log = logging.getLogger(__name__)
 
-# Qwen3-Embedding pools the last token, which should be the end-of-text token.
-EOS = "<|endoftext|>"
 BATCH = 16
 
 
@@ -43,14 +41,18 @@ def _save_cache(cache):
 
 
 def server_args():
-    # 8 slots of 4k tokens each; every post fits comfortably in one slot.
-    return ["--embedding", "--pooling", "last", "-ngl", "99", "-fa", "on",
-            "-c", "32768", "-np", "8", "-b", "4096", "-ub", "4096"]
+    # The longest post is about 5.8k tokens, and with last-token pooling a post
+    # has to fit in one micro-batch, hence the 8k batch. A bigger context won't
+    # fit in 4 GB next to the model. GPU layers are left to llama.cpp's auto-fit.
+    return ["--embedding", "--pooling", "last", "-fa", "on", "-c", "8192", "-np", "1",
+            "-b", "8192", "-ub", "8192", "-ctk", "q8_0", "-ctv", "q8_0"]
 
 
 def embed_posts(texts):
     """Return an (n, dim) array of L2-normalised vectors, one per post."""
-    prompts = [config.EMBED_INSTRUCTION + t + EOS for t in texts]
+    # Qwen3-Embedding pools the final end-of-text token. llama.cpp appends it
+    # for us (the GGUF sets add_eos), so we don't add another one here.
+    prompts = [config.EMBED_INSTRUCTION + t for t in texts]
     keys = [_key(p) for p in prompts]
     cache = _load_cache()
     todo = sorted({k: p for k, p in zip(keys, prompts) if k not in cache}.items())
