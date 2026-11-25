@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import requests
 
 from . import cluster, config, data, embed, llm, progress, themes
 from .keywords import ctfidf_keywords
@@ -126,6 +127,15 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
                     log.info("A prompt needs %d tokens; restarting Gemma with a bigger context",
                              e.prompt_tokens)
                     server.ensure(e.prompt_tokens, grow_only=True)
+                except requests.ConnectionError:
+                    # The server died (for example, the system ran out of RAM).
+                    # Start it again and carry on; finished answers are cached.
+                    server.crashes += 1
+                    if server.crashes > 3:
+                        raise
+                    log.warning("Gemma's server stopped unexpectedly (crash %d of 3 allowed); "
+                                "restarting it and carrying on from the cache", server.crashes)
+                    server.restart()
             theme_of, floor, reassigned, closeness = themes.assign_noise(tv, labels, final)
             desc = {t: d for t, d in final.values()}
             desc["Other"] = "Did not fit any theme in this topic closely enough."
@@ -207,6 +217,7 @@ class LLMServer:
         self.client = None
         self.ctx = 0
         self.history = []
+        self.crashes = 0
 
     def ensure(self, prompt_tokens, grow_only=False):
         """Make sure the running server fits a prompt of this size.
@@ -225,6 +236,9 @@ class LLMServer:
         if ctx == self.ctx:
             return
         self.stop()
+        self._launch(ctx, cpu_layers)
+
+    def _launch(self, ctx, cpu_layers):
         # If the GPU has less room than the table expects (another program using
         # VRAM, say), move a few more layers to the CPU and try again.
         for attempt in range(4):
@@ -243,6 +257,16 @@ class LLMServer:
         self.client = llm.Client(url, ctx)
         self.ctx = ctx
         self.history.append({"context": ctx, "cpu_layers": cpu_layers})
+
+    def restart(self):
+        """Start the server again with the same context window."""
+        ctx = self.ctx
+        self.stop()
+        self.ctx = 0
+        layers = next(t[1] for t in config.CONTEXT_TIERS if t[0] == ctx)
+        if config.LLM_CPU_FFN_LAYERS is not None:
+            layers = int(config.LLM_CPU_FFN_LAYERS)
+        self._launch(ctx, layers)
 
     def stop(self):
         if self.cm is not None:

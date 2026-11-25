@@ -57,7 +57,7 @@ def server_args(gpu_layers=99, ubatch=512):
     # longest post, about 5.8k tokens.
     return ["--embedding", "--pooling", "last", "-ngl", str(gpu_layers), "-fa", "on",
             "-c", "8192", "-np", "1", "-b", "8192", "-ub", str(ubatch),
-            "-ctk", "q8_0", "-ctv", "q8_0"]
+            "-ctk", "q8_0", "-ctv", "q8_0", "--cache-ram", "0"]
 
 
 def _start(model):

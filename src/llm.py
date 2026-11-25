@@ -40,7 +40,11 @@ def server_args(ctx, cpu_layers):
     return ["-c", str(ctx), "-np", "1", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
             "-ngl", "99", "-ot", to_cpu, "-b", "2048", "-ub", "256",
             "--jinja", "--reasoning", "on" if config.LLM_THINKING else "off",
-            "--reasoning-budget", str(config.LLM_THINKING_BUDGET if config.LLM_THINKING else 0)]
+            "--reasoning-budget", str(config.LLM_THINKING_BUDGET if config.LLM_THINKING else 0),
+            # llama-server keeps old prompts in RAM (up to 8 GB by default) to
+            # reuse them. Ours never repeat (answers are cached on disk instead),
+            # so it only grew until Linux killed the server on a 16 GB machine.
+            "--cache-ram", "0"]
 
 
 def start(ctx, cpu_layers):
