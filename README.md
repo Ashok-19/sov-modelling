@@ -57,7 +57,7 @@ Three columns are used:
 All other columns are carried through to the output untouched. For Excel, the
 sheet is `Master Data` unless you pass `--sheet`. Topics called "Non-MS /
 Noise" are skipped, and a few spelling variants of topic names are folded
-together (see `TOPIC_ALIASES` in `sov/config.py`).
+together (see `TOPIC_ALIASES` in `src/config.py`).
 
 ## Output
 
@@ -130,7 +130,7 @@ The embedding model and the LLM never run at the same time.
 Environment variables for unusual setups: `SOV_MODELS_DIR` (where models are
 kept), `LLAMA_SERVER` (path to llama-server), `SOV_PORT` (port it uses), and
 `SOV_LLM_CPU_FFN_LAYERS` (force how many Gemma layers keep their feed-forward
-weights in RAM; by default it depends on the context size, see `sov/config.py`,
+weights in RAM; by default it depends on the context size, see `src/config.py`,
 and 0 suits a GPU bigger than 4 GB). The LLM settings can be changed the same
 way: `SOV_LLM_THINKING_BUDGET` (default 8192 tokens), `SOV_LLM_THINKING=0` to
 switch thinking off, and `SOV_LLM_CTX` (the largest context allowed, default

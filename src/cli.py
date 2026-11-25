@@ -1,4 +1,4 @@
-"""Command line options. run.py and `python -m sov` both end up here."""
+"""Command line options. run.py and `python -m src` both end up here."""
 
 import argparse
 import logging
