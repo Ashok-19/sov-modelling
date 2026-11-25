@@ -1,10 +1,16 @@
 .venv/
 __pycache__/
 *.pyc
-# input data and everything the pipeline writes stays local
+# input data, models and everything the pipeline writes stay local; the
+# folders themselves are kept (via .gitkeep) so the layout is there on clone
 data/*
 cache/*
 output/*
+model/*
+!data/.gitkeep
+!cache/.gitkeep
+!output/.gitkeep
+!model/.gitkeep
 
 # never commit client data or anything big, wherever it ends up
 *.xlsx
@@ -17,4 +23,3 @@ output/*
 *.npy
 *.log
 *.typescript
-models/*

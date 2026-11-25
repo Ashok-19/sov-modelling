@@ -22,7 +22,8 @@ TOPIC_ALIASES = {
 # Posts the classifier marked as unrelated to MS. We don't cluster these.
 SKIP_TOPIC_WORDS = ("non-ms", "noise")
 
-MODELS_DIR = Path(os.environ.get("SOV_MODELS_DIR", Path.home() / "models"))
+# Models download into the repo's own model/ folder (git ignores the files).
+MODELS_DIR = Path(os.environ.get("SOV_MODELS_DIR", ROOT / "model"))
 LLAMA_SERVER = os.environ.get("LLAMA_SERVER", "llama-server")
 
 EMBED_REPO = "Qwen/Qwen3-Embedding-4B-GGUF"

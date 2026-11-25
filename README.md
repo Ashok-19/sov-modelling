@@ -24,7 +24,8 @@ python run.py                            # every topic
 python run.py -i my_posts.csv -o results -t 9   # your own file and output folder
 ```
 
-The first run downloads the two models (about 7.5 GB in total) into `~/models`.
+The first run downloads the two models (about 7.5 GB in total) into the repo's
+`model/` folder.
 After that it works offline.
 
 ## What you need
