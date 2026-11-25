@@ -5,43 +5,114 @@ each topic groups the posts into sub-themes. Each theme gets a short name and
 a description. Everything runs on your own machine; nothing is sent to a cloud
 service.
 
-## Quick start
+## What you need
+
+- **Python 3.10 or newer.**
+- **A GPU for the models.** An NVIDIA card with CUDA on Windows or Linux (4 GB
+  of VRAM is enough), or an Apple Silicon Mac. 16 GB of RAM is recommended.
+- **llama.cpp's `llama-server`**, built for your GPU. The steps for each
+  system are below.
+- About 8 GB of free disk for the two models. The first run downloads them
+  into the repo's `model/` folder; after that everything works offline.
+
+## Install
+
+Pick your system. Each section sets up the Python environment and
+`llama-server`, once.
+
+<details>
+<summary><b>Linux</b> (NVIDIA GPU)</summary>
 
 ```bash
-# 1. once: create a virtual environment and install the packages
+# Python environment
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. see what you can pass in
-python run.py --help
+# llama-server with CUDA (needs the CUDA toolkit, cmake and a C++ compiler)
+git clone https://github.com/ggml-org/llama.cpp ~/llama.cpp
+cd ~/llama.cpp
+cmake -B build -DGGML_CUDA=ON
+cmake --build build --config Release -j
+export PATH="$HOME/llama.cpp/build/bin:$PATH"   # add this line to ~/.bashrc to keep it
+cd -
+```
 
-# 3. run it
+Check it worked: `llama-server --version` and `nvidia-smi` should both print
+something.
+
+</details>
+
+<details>
+<summary><b>Windows</b> (NVIDIA GPU)</summary>
+
+In PowerShell, from the repo folder:
+
+```powershell
+# Python environment
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+For `llama-server`, download a ready-made build from the
+[llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases):
+take the `llama-…-bin-win-cuda-…-x64.zip` file and the matching
+`cudart-llama-bin-win-cuda-…-x64.zip`, and unzip both into the same folder,
+say `C:\llama`. Then tell the pipeline where it is:
+
+```powershell
+$env:LLAMA_SERVER = "C:\llama\llama-server.exe"
+# to keep it for new windows too:
+setx LLAMA_SERVER "C:\llama\llama-server.exe"
+```
+
+If PowerShell refuses to run `Activate.ps1`, run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once. If `pip` fails
+while building `hdbscan`, install the "Desktop development with C++" workload
+from the Visual Studio Build Tools and try again.
+
+</details>
+
+<details>
+<summary><b>macOS</b> (Apple Silicon)</summary>
+
+```bash
+# Python environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# llama-server (Homebrew's build uses the Mac's GPU through Metal)
+brew install llama.cpp
+```
+
+Macs share memory between the CPU and GPU, so the CPU/GPU split that the
+pipeline uses for 4 GB NVIDIA cards isn't needed. Turn it off:
+
+```bash
+export SOV_LLM_CPU_FFN_LAYERS=0   # add to ~/.zshrc to keep it
+```
+
+There's no `nvidia-smi` on a Mac, so the live display shows "GPU: not
+available"; that's expected. Intel Macs aren't supported: they're too slow
+for these models.
+
+</details>
+
+## Running
+
+Activate the environment first (`source .venv/bin/activate`, or
+`.venv\Scripts\Activate.ps1` on Windows), put your input file in `data/`, then:
+
+```bash
+python run.py --help                     # every option, with examples
 python run.py --list-topics              # topics found in the input file
 python run.py -t 9                       # just topic 9
 python run.py -t 5 9 11                  # a few topics
 python run.py                            # every topic
 python run.py -i my_posts.csv -o results -t 9   # your own file and output folder
 ```
-
-The first run downloads the two models (about 7.5 GB in total) into the repo's
-`model/` folder.
-After that it works offline.
-
-## What you need
-
-- **Python 3.10 or newer.**
-- **An NVIDIA GPU** with CUDA. 4 GB of VRAM is enough; 16 GB of RAM is
-  recommended.
-- **llama.cpp's `llama-server`, built with CUDA,** on your `PATH`. If you don't
-  have it:
-
-  ```bash
-  git clone https://github.com/ggml-org/llama.cpp
-  cd llama.cpp
-  cmake -B build -DGGML_CUDA=ON && cmake --build build --config Release -j
-  # then put build/bin on your PATH, or point LLAMA_SERVER at build/bin/llama-server
-  ```
 
 ## Input file
 
