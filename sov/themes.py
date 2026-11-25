@@ -53,6 +53,11 @@ MERGE_EXAMPLES = 6
 # are judged the same. Requiring every pair let one noisy verdict keep obvious
 # duplicates apart; a clear majority still stops unrelated themes chaining.
 MERGE_AGREEMENT = 2 / 3
+# When deciding whether two groups join, at most this many of the pairs
+# between them are checked: the ones already answered first, then the closest
+# by embedding. Checking every pair made the step drag on for hours as groups
+# grew, without changing many decisions.
+MERGE_MAX_CROSS_CHECKS = 6
 
 SYSTEM = (
     "You are a social listening analyst preparing a share of voice report on online "
@@ -265,7 +270,9 @@ def merge_themes(client, topic, named, texts, vecs, labels):
         ga, gb = group_of[a], group_of[b]
         if not is_same or ga == gb:
             continue
-        votes = [same(x, y) for x in ga for y in gb]
+        cross = sorted(((x, y) for x in ga for y in gb),
+                       key=lambda p: (tuple(sorted(p)) not in verdicts, -sim[p]))
+        votes = [same(x, y) for x, y in cross[:MERGE_MAX_CROSS_CHECKS]]
         if sum(votes) / len(votes) >= MERGE_AGREEMENT:
             merged = ga | gb
             for c in merged:
