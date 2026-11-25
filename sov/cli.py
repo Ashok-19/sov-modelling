@@ -46,6 +46,7 @@ def main(argv=None):
             print(f"{num:>3}  {name}")
         return
 
+    config.LLM_CTX = args.ctx
     config.LLM_THINKING = not args.no_thinking
     config.LLM_THINKING_BUDGET = args.thinking_budget
 

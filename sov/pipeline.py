@@ -101,38 +101,31 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
     kept["Theme Assigned By"] = None
     kept["Theme Truncated"] = False
     kept["Theme Similarity"] = np.nan
-    # Size the LLM's context to the biggest cluster prompt we'll send. A rough
-    # estimate (3 characters per token, which overshoots for English) picks the
-    # starting size; if a cluster still doesn't fit, the server restarts bigger.
-    biggest = 0
-    for mask, texts, tv, labels, *_ in per_topic.values():
-        for c in set(labels) - {-1}:
-            chars = sum(len(t) for t in set(t for t, l in zip(texts, labels) if l == c))
-            biggest = max(biggest, chars // 3 + 1000)
     server = LLMServer(min(ctx, config.LLM_CTX), timer)
     try:
-        server.start(biggest)
         ui.set_stage("Naming and merging themes (Gemma 4 E4B" +
                      (", thinking on)" if config.LLM_THINKING else ")"))
         for num, (mask, texts, tv, labels, kw, substantive, cluster_time) in per_topic.items():
             name = available[num]
             info = run_log["topics"][name]
             t0 = time.time() - cluster_time
-            ui.topic(name, status="running", step="naming clusters")
+            server.ensure(estimate_prompt_tokens(texts, tv, labels))
+            ui.set_stage(f"Naming and merging themes (Gemma 4 E4B, {server.ctx // 1024}k context" +
+                         (", thinking on)" if config.LLM_THINKING else ")"))
             while True:
                 try:
+                    ui.topic(name, status="running", step="naming clusters")
                     with timer("llm naming"):
                         named = themes.name_clusters(server.client, name, texts, tv, labels, kw)
+                    ui.topic(name, step="merging themes")
+                    with timer("llm merge"):
+                        final = themes.merge_themes(server.client, name, named, texts, tv, labels)
                     break
                 except llm.ContextTooSmall as e:
                     # Earlier answers are cached, so redoing the topic is quick.
-                    log.info("A cluster needs %d prompt tokens; restarting Gemma with a bigger "
-                             "context", e.prompt_tokens)
-                    server.start(e.prompt_tokens)
-            client = server.client
-            ui.topic(name, step="merging themes")
-            with timer("llm merge"):
-                final = themes.merge_themes(client, name, named, texts, tv, labels)
+                    log.info("A prompt needs %d tokens; restarting Gemma with a bigger context",
+                             e.prompt_tokens)
+                    server.ensure(e.prompt_tokens, grow_only=True)
             theme_of, floor, reassigned, closeness = themes.assign_noise(tv, labels, final)
             desc = {t: d for t, d in final.values()}
             desc["Other"] = "Did not fit any theme in this topic closely enough."
@@ -157,7 +150,7 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
             n_themes = len({t for t in theme_of if t != "Other"})
             note = f"done, {len(info['truncated_clusters'])} truncated!" if info["truncated_clusters"] else "done"
             ui.topic(name, status="done", step=note, themes=n_themes, time=f"{time.time() - t0:.0f}s")
-        run_log["llm_context"] = server.ctx
+        run_log["llm_context"] = server.history
     finally:
         server.stop()
 
@@ -181,8 +174,31 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
     return kept, run_log
 
 
+def estimate_prompt_tokens(texts, vecs, labels):
+    """A cautious guess at the biggest prompt a topic will need, in tokens.
+
+    Builds the same post lists the naming and merge steps will send (every
+    distinct post of a cluster; a theme's examples plus its nearest
+    neighbours') and counts 3 characters per token, which overshoots for
+    English, so the window chosen is usually big enough. If it's still short,
+    the server grows mid-topic.
+    """
+    ids = sorted(set(labels) - {-1})
+    if not ids:
+        return 2000
+    cents = themes.centroids(vecs, labels)
+    naming = max(sum(len(t) for t in set(t for t, l in zip(texts, labels) if l == c)) for c in ids)
+    examples = {c: sum(len(t) for t in themes._examples(texts, vecs, labels, c, cents)) for c in ids}
+    cmat = np.stack([cents[c] for c in ids])
+    merge = 0
+    for i, c in enumerate(ids):
+        near = [ids[j] for j in np.argsort(-(cmat @ cmat[i])) if ids[j] != c][:themes.MERGE_NEIGHBOURS]
+        merge = max(merge, examples[c] + sum(examples[o] for o in near))
+    return max(naming, merge) // 3 + 1500
+
+
 class LLMServer:
-    """The Gemma server, which can be restarted with a bigger context mid-run."""
+    """The Gemma server, restarted with a different context size when needed."""
 
     def __init__(self, max_ctx, timer):
         self.max_ctx = max_ctx
@@ -190,19 +206,43 @@ class LLMServer:
         self.cm = None
         self.client = None
         self.ctx = 0
+        self.history = []
 
-    def start(self, prompt_tokens):
+    def ensure(self, prompt_tokens, grow_only=False):
+        """Make sure the running server fits a prompt of this size.
+
+        Picks the smallest window that fits. Between topics it may also shrink,
+        since a smaller window is much faster. Mid-topic (grow_only) it only grows.
+        """
         ctx, cpu_layers = llm.pick_context(prompt_tokens)
         ctx = min(ctx, self.max_ctx)
-        if ctx <= self.ctx:
-            raise RuntimeError(f"needed a context above {self.ctx} but none is available")
+        if grow_only and ctx <= self.ctx:
+            bigger = [t for t in config.CONTEXT_TIERS if self.ctx < t[0] <= self.max_ctx]
+            if not bigger:
+                raise RuntimeError(f"a prompt of {prompt_tokens} tokens doesn't fit even the "
+                                   f"largest context ({self.ctx})")
+            ctx, cpu_layers = bigger[0]
+        if ctx == self.ctx:
+            return
         self.stop()
-        progress.ui.set_stage(f"Loading Gemma 4 E4B ({ctx // 1024}k context)")
-        with self.timer("llm load"):
-            self.cm = llm.start(ctx, cpu_layers)
-            url = self.cm.__enter__()
+        # If the GPU has less room than the table expects (another program using
+        # VRAM, say), move a few more layers to the CPU and try again.
+        for attempt in range(4):
+            progress.ui.set_stage(f"Loading Gemma 4 E4B ({ctx // 1024}k context)")
+            try:
+                with self.timer("llm load"):
+                    self.cm = llm.start(ctx, cpu_layers)
+                    url = self.cm.__enter__()
+                break
+            except RuntimeError:
+                if attempt == 3:
+                    raise
+                log.warning("Gemma didn't fit with %d layers on the CPU; trying %d",
+                            cpu_layers, cpu_layers + 6)
+                cpu_layers += 6
         self.client = llm.Client(url, ctx)
         self.ctx = ctx
+        self.history.append({"context": ctx, "cpu_layers": cpu_layers})
 
     def stop(self):
         if self.cm is not None:

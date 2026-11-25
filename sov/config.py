@@ -40,8 +40,9 @@ LLM_REPO = "unsloth/gemma-4-E4B-it-GGUF"
 LLM_FILE = "gemma-4-E4B-it-Q4_K_M.gguf"
 # Largest context window the naming model may use. Gemma 4 E4B supports 128k.
 LLM_CTX = int(os.environ.get("SOV_LLM_CTX", 131072))
-# The context is sized to the job: the run measures its biggest prompt and picks
-# the smallest window below that fits it plus the thinking budget. A bigger
+# The context is sized to the job, topic by topic: before each topic the run
+# estimates its biggest prompt (cluster naming and merge checks) and picks the
+# smallest window below that fits it plus the thinking budget and the answer. A bigger
 # window needs more VRAM for the KV cache, so more of Gemma's feed-forward
 # weights have to move to the CPU, which is much slower:
 #   window   layers on CPU   speed measured on the 4 GB RTX 3050
@@ -50,8 +51,9 @@ LLM_CTX = int(os.environ.get("SOV_LLM_CTX", 131072))
 #    64k         10            22 tokens/s
 #    96k         20            12 tokens/s
 #   128k         30            13 tokens/s
-# A cluster that doesn't fit restarts the server one size up, so nothing is
-# ever chunked. The per-layer embedding table always stays in RAM (it's only
+# If a prompt still doesn't fit, the server restarts one size up, so nothing is
+# ever chunked. If the GPU has less free memory than expected and the server
+# can't start, it retries with more layers on the CPU. The per-layer embedding table always stays in RAM (it's only
 # used for lookups). On a bigger GPU, set SOV_LLM_CPU_FFN_LAYERS=0.
 CONTEXT_TIERS = [(32768, 0), (49152, 6), (65536, 10), (98304, 20), (131072, 30)]
 LLM_CPU_FFN_LAYERS = os.environ.get("SOV_LLM_CPU_FFN_LAYERS")
@@ -62,6 +64,6 @@ LLM_MAX_OUTPUT = 1024
 # under 1.5k tokens per answer). It's reserved in the context window next to the
 # posts, so a bigger budget means a bigger, slower window (see above).
 LLM_THINKING = os.environ.get("SOV_LLM_THINKING", "1") != "0"
-LLM_THINKING_BUDGET = int(os.environ.get("SOV_LLM_THINKING_BUDGET", 16384))
+LLM_THINKING_BUDGET = int(os.environ.get("SOV_LLM_THINKING_BUDGET", 8192))
 
 PORT = int(os.environ.get("SOV_PORT", 8091))

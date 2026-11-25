@@ -216,6 +216,9 @@ def _which_are_same(client, topic, named, texts, vecs, labels, cents, a, candida
         f"Give same_as as a list of group numbers from {sorted(candidates)}; it can be empty."
     )
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
+    n_tokens = client.count_tokens(messages)
+    if n_tokens > client.prompt_budget() and client.ctx < config.LLM_CTX:
+        raise ContextTooSmall(n_tokens)
     try:
         answer, _ = client.chat_json(messages, SAME_AS_SCHEMA, "same_as")
     except ValueError:

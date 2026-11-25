@@ -102,8 +102,10 @@ or saving the output to a file.
    same way, until a split stops being stable.
 4. **Keywords** per cluster (c-TF-IDF), used as hints for the next step.
 5. **Name** each cluster with Gemma 4 E4B. It reads the whole cluster in one
-   call (128k context, no chunking), and only that cluster's posts. Gemma
-   thinks before it answers (up to 32k tokens). If a cluster is ever too big
+   call (no chunking), and only that cluster's posts. Gemma thinks before it
+   answers (up to 8k tokens). The context window is sized per topic to the
+   biggest prompt plus the thinking budget, from 32k (all on the GPU, fastest)
+   up to 128k, and grows mid-run if a prompt needs more. If a cluster is ever too big
    to fit, the log says so and the theme is flagged in the output.
 6. **Merge** themes that are really the same. Each theme is compared with
    its nearest neighbours, using example posts from both, and merged only
@@ -124,13 +126,14 @@ The embedding model and the LLM never run at the same time.
 | `--name name` | output file name |
 | `--leiden` | also run Leiden clustering as a cross-check |
 | `--no-thinking` | switch off Gemma's thinking step: roughly 10× faster LLM step, answers may be weaker |
-| `--thinking-budget 32768` | ceiling on how long Gemma may think per answer (it rarely needs more than 1k) |
-| `--ctx 65536` | smaller LLM context if memory is short |
+| `--thinking-budget 8192` | ceiling on how long Gemma may think per answer (it rarely needs more than 1.5k) |
+| `--ctx 65536` | the largest context the run may use (it picks the smallest that fits) |
 | `--no-ui` | plain logs instead of the live display |
 
 Environment variables for unusual setups: `SOV_MODELS_DIR` (where models are
 kept), `LLAMA_SERVER` (path to llama-server), `SOV_PORT` (port it uses), and
-`SOV_LLM_CPU_FFN_LAYERS` (how many Gemma layers keep their feed-forward weights
-in RAM; 30 lets the 128k context fit in 4 GB, so use 0 on a bigger GPU).
+`SOV_LLM_CPU_FFN_LAYERS` (force how many Gemma layers keep their feed-forward
+weights in RAM; by default it depends on the context size, see `sov/config.py`,
+and 0 suits a GPU bigger than 4 GB).
 
 The original plan is in [docs/pipeline-plan.md](docs/pipeline-plan.md).
