@@ -74,7 +74,7 @@ In the output folder (`output/` unless you pass `-o`):
     each stage took.
 - `<name>_runlog.json`: the same, with every setting that was tried.
 
-`<name>` is `sov_themes_<date>_<time>` unless you pass `--name`. A full log of
+`<name>` is `sov_themes_<date>_<time>` unless you pass `--output-name`. A full log of
 every run is kept in `cache/run.log`.
 
 ## What you see while it runs
@@ -123,7 +123,7 @@ The embedding model and the LLM never run at the same time.
 | `-i file.xlsx` / `-i file.csv` | input file |
 | `--sheet "Master Data"` | Excel sheet to read |
 | `-o folder` | output folder |
-| `--name name` | output file name |
+| `--output-name topic11` | base name of the result files (`topic11.xlsx`, `topic11_runlog.json`); reusing a name overwrites |
 | `--leiden` | also run Leiden clustering as a cross-check |
 | `--no-thinking` | switch off Gemma's thinking step: roughly 10× faster LLM step, answers may be weaker |
 | `--thinking-budget 8192` | ceiling on how long Gemma may think per answer (it rarely needs more than 1.5k) |
