@@ -135,4 +135,3 @@ way: `SOV_LLM_THINKING_BUDGET` (default 8192 tokens), `SOV_LLM_THINKING=0` to
 switch thinking off, and `SOV_LLM_CTX` (the largest context allowed, default
 131072).
 
-The original plan is in [docs/pipeline-plan.md](docs/pipeline-plan.md).
