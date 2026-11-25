@@ -88,8 +88,8 @@ A live display with:
 - the latest events: settings chosen, each theme as it's named, merge
   decisions, and any warnings in yellow or errors in red.
 
-Add `--no-ui` for plain log lines instead, for example when running over SSH
-or saving the output to a file.
+If the output isn't a terminal (piped, or redirected to a file), you get plain
+log lines instead.
 
 ## How it works
 
@@ -125,15 +125,14 @@ The embedding model and the LLM never run at the same time.
 | `-o folder` | output folder |
 | `--output-name topic11` | base name of the result files (`topic11.xlsx`, `topic11_runlog.json`); reusing a name overwrites |
 | `--leiden` | also run Leiden clustering as a cross-check |
-| `--no-thinking` | switch off Gemma's thinking step: roughly 10× faster LLM step, answers may be weaker |
-| `--thinking-budget 8192` | ceiling on how long Gemma may think per answer (it rarely needs more than 1.5k) |
-| `--ctx 65536` | the largest context the run may use (it picks the smallest that fits) |
-| `--no-ui` | plain logs instead of the live display |
 
 Environment variables for unusual setups: `SOV_MODELS_DIR` (where models are
 kept), `LLAMA_SERVER` (path to llama-server), `SOV_PORT` (port it uses), and
 `SOV_LLM_CPU_FFN_LAYERS` (force how many Gemma layers keep their feed-forward
 weights in RAM; by default it depends on the context size, see `sov/config.py`,
-and 0 suits a GPU bigger than 4 GB).
+and 0 suits a GPU bigger than 4 GB). The LLM settings can be changed the same
+way: `SOV_LLM_THINKING_BUDGET` (default 8192 tokens), `SOV_LLM_THINKING=0` to
+switch thinking off, and `SOV_LLM_CTX` (the largest context allowed, default
+131072).
 
 The original plan is in [docs/pipeline-plan.md](docs/pipeline-plan.md).

@@ -35,7 +35,7 @@ class Timer:
 
 
 def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPUT_DIR,
-        topic_numbers=None, leiden=False, ctx=config.LLM_CTX, out_name=None):
+        topic_numbers=None, leiden=False, out_name=None):
     ui = progress.ui
     output_dir = Path(output_dir)
     config.CACHE_DIR.mkdir(exist_ok=True)
@@ -43,7 +43,7 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
     timer = Timer()
     run_log = {"started": datetime.now().isoformat(timespec="seconds"),
                "embed_model": config.EMBED_FILE, "llm_model": config.LLM_FILE,
-               "llm_context": ctx, "llm_thinking": config.LLM_THINKING,
+               "llm_thinking": config.LLM_THINKING,
                "input": str(input_path), "topics": {}}
 
     ui.set_stage("Loading posts")
@@ -101,7 +101,7 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
     kept["Theme Assigned By"] = None
     kept["Theme Truncated"] = False
     kept["Theme Similarity"] = np.nan
-    server = LLMServer(min(ctx, config.LLM_CTX), timer)
+    server = LLMServer(config.LLM_CTX, timer)
     try:
         ui.set_stage("Naming and merging themes (Gemma 4 E4B" +
                      (", thinking on)" if config.LLM_THINKING else ")"))

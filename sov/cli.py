@@ -30,12 +30,6 @@ def parse_args(argv=None):
                    help="base file name for the results, without extension: writes FILENAME.xlsx and "
                         "FILENAME_runlog.json (default: sov_themes_<date>_<time>)")
     p.add_argument("--leiden", action="store_true", help="also run a Leiden clustering as a cross-check")
-    p.add_argument("--ctx", type=int, default=config.LLM_CTX, help="LLM context size in tokens (default: %(default)s)")
-    p.add_argument("--no-thinking", action="store_true",
-                   help="switch off Gemma's thinking step (much faster, answers may be weaker)")
-    p.add_argument("--thinking-budget", type=int, default=config.LLM_THINKING_BUDGET,
-                   help="most tokens Gemma may spend thinking per answer (default: %(default)s)")
-    p.add_argument("--no-ui", action="store_true", help="plain log lines instead of the live display")
     return p.parse_args(argv)
 
 
@@ -48,14 +42,11 @@ def main(argv=None):
             print(f"{num:>3}  {name}")
         return
 
-    config.LLM_CTX = args.ctx
-    config.LLM_THINKING = not args.no_thinking
-    config.LLM_THINKING_BUDGET = args.thinking_budget
-
-    # Everything is always logged to cache/run.log. On screen you get either
-    # the live display or, with --no-ui or when piping, the plain log lines.
+    # Everything is always logged to cache/run.log. On screen you get the live
+    # display in a terminal, or plain log lines when the output is piped or
+    # redirected to a file.
     handlers = [logging.FileHandler(config.CACHE_DIR / "run.log")]
-    use_ui = not args.no_ui and sys.stdout.isatty()
+    use_ui = sys.stdout.isatty()
     if not use_ui:
         handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -65,7 +56,7 @@ def main(argv=None):
         progress.enable()
     try:
         pipeline.run(args.input, args.sheet, args.output_dir, args.topics,
-                     leiden=args.leiden, ctx=args.ctx, out_name=args.output_name)
+                     leiden=args.leiden, out_name=args.output_name)
     except Exception:
         progress.ui.set_stage("Failed, see the last lines below and cache/run.log")
         logging.getLogger(__name__).exception("Run failed")

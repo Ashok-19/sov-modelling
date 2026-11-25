@@ -2,7 +2,7 @@
 
 The rest of the code talks to the module-level `ui` object: start a task with a
 total, advance it, mark topic status, and log events. When the display is off
-(--no-ui, or output isn't a terminal) the same calls just do nothing, and
+(output isn't a terminal) the same calls just do nothing, and
 plain log lines still go to the console and to cache/run.log.
 """
 
