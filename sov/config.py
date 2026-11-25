@@ -38,21 +38,30 @@ MIN_WORDS_TO_CLUSTER = 5
 
 LLM_REPO = "unsloth/gemma-4-E4B-it-GGUF"
 LLM_FILE = "gemma-4-E4B-it-Q4_K_M.gguf"
-# Context window for the naming model. Gemma 4 E4B supports 128k; we use as
-# much as the machine allows. Override with SOV_LLM_CTX if memory is tight.
+# Largest context window the naming model may use. Gemma 4 E4B supports 128k.
 LLM_CTX = int(os.environ.get("SOV_LLM_CTX", 131072))
-# How Gemma is split between the 4 GB GPU and RAM at 128k context. Attention
-# and the KV cache stay on the GPU; the per-layer embedding table (1.8 GB, only
-# used for lookups) and the feed-forward weights of the first N layers go to RAM.
-# 30 was the smallest N that ran a long prompt without running out of VRAM.
-# Lower it if you use a smaller context or have a bigger GPU.
-LLM_CPU_FFN_LAYERS = int(os.environ.get("SOV_LLM_CPU_FFN_LAYERS", 30))
+# The context is sized to the job: the run measures its biggest prompt and picks
+# the smallest window below that fits it plus the thinking budget. A bigger
+# window needs more VRAM for the KV cache, so more of Gemma's feed-forward
+# weights have to move to the CPU, which is much slower:
+#   window   layers on CPU   speed measured on the 4 GB RTX 3050
+#    32k          0            42 tokens/s
+#    48k          6            31 tokens/s
+#    64k         10            22 tokens/s
+#    96k         20            12 tokens/s
+#   128k         30            13 tokens/s
+# A cluster that doesn't fit restarts the server one size up, so nothing is
+# ever chunked. The per-layer embedding table always stays in RAM (it's only
+# used for lookups). On a bigger GPU, set SOV_LLM_CPU_FFN_LAYERS=0.
+CONTEXT_TIERS = [(32768, 0), (49152, 6), (65536, 10), (98304, 20), (131072, 30)]
+LLM_CPU_FFN_LAYERS = os.environ.get("SOV_LLM_CPU_FFN_LAYERS")
 LLM_MAX_OUTPUT = 1024
 # Let Gemma think before it answers. Better answers, but each call takes longer.
 # Set SOV_LLM_THINKING=0 to switch it off. The budget is a ceiling, not a target:
 # it's set high so the model is never cut off mid-thought (in practice it uses
-# under 1k tokens per answer). It comes out of the same 128k window as the posts.
+# under 1.5k tokens per answer). It's reserved in the context window next to the
+# posts, so a bigger budget means a bigger, slower window (see above).
 LLM_THINKING = os.environ.get("SOV_LLM_THINKING", "1") != "0"
-LLM_THINKING_BUDGET = int(os.environ.get("SOV_LLM_THINKING_BUDGET", 32768))
+LLM_THINKING_BUDGET = int(os.environ.get("SOV_LLM_THINKING_BUDGET", 16384))
 
 PORT = int(os.environ.get("SOV_PORT", 8091))

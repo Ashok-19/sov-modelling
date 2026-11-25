@@ -12,12 +12,28 @@ from .server import llama_server, model_path
 log = logging.getLogger(__name__)
 
 
-def server_args(ctx=config.LLM_CTX):
-    # Flash attention plus a q8_0 KV cache is what lets a 128k window fit, and
+def needed_context(prompt_tokens):
+    return prompt_tokens + config.LLM_THINKING_BUDGET + config.LLM_MAX_OUTPUT + 512
+
+
+def pick_context(prompt_tokens):
+    """Smallest context tier that fits a prompt of this size, as (ctx, cpu_layers)."""
+    need = needed_context(prompt_tokens)
+    tiers = [t for t in config.CONTEXT_TIERS if t[0] <= config.LLM_CTX]
+    for ctx, layers in tiers:
+        if ctx >= need:
+            break
+    if config.LLM_CPU_FFN_LAYERS is not None:
+        layers = int(config.LLM_CPU_FFN_LAYERS)
+    return ctx, layers
+
+
+def server_args(ctx, cpu_layers):
+    # Flash attention plus a q8_0 KV cache keep the window small in memory, and
     # -ub 256 keeps the compute buffer small. One slot, so each request gets
     # the whole window. See config.py for why some weights live in RAM.
     to_cpu = "per_layer_token_embd=CPU"
-    n = config.LLM_CPU_FFN_LAYERS
+    n = cpu_layers
     if n:
         layers = "|".join(str(i) for i in range(n))
         to_cpu += rf",blk\.({layers})\.ffn_(up|gate|down)=CPU"
@@ -27,8 +43,18 @@ def server_args(ctx=config.LLM_CTX):
             "--reasoning-budget", str(config.LLM_THINKING_BUDGET if config.LLM_THINKING else 0)]
 
 
-def start(ctx=config.LLM_CTX):
-    return llama_server(model_path(config.LLM_REPO, config.LLM_FILE), server_args(ctx))
+def start(ctx, cpu_layers):
+    log.info("Starting Gemma with a %dk context, %d layers' feed-forward weights on the CPU",
+             ctx // 1024, cpu_layers)
+    return llama_server(model_path(config.LLM_REPO, config.LLM_FILE), server_args(ctx, cpu_layers))
+
+
+class ContextTooSmall(Exception):
+    """A prompt needs a bigger window than the running server has."""
+
+    def __init__(self, prompt_tokens):
+        super().__init__(f"prompt of {prompt_tokens} tokens needs a bigger context")
+        self.prompt_tokens = prompt_tokens
 
 
 # With thinking switched off, Gemma 4 still opens a "thought" channel on its
@@ -41,7 +67,7 @@ EMPTY_THOUGHT = "<|channel>thought\n<channel|>"
 
 
 class Client:
-    def __init__(self, url, ctx=config.LLM_CTX):
+    def __init__(self, url, ctx):
         self.url = url
         self.ctx = ctx
         # Answers are saved by a hash of the exact request, so rerunning the

@@ -101,9 +101,17 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
     kept["Theme Assigned By"] = None
     kept["Theme Truncated"] = False
     kept["Theme Similarity"] = np.nan
-    ui.set_stage("Loading Gemma 4 E4B")
-    with llm.start(ctx) as url:
-        client = llm.Client(url, ctx)
+    # Size the LLM's context to the biggest cluster prompt we'll send. A rough
+    # estimate (3 characters per token, which overshoots for English) picks the
+    # starting size; if a cluster still doesn't fit, the server restarts bigger.
+    biggest = 0
+    for mask, texts, tv, labels, *_ in per_topic.values():
+        for c in set(labels) - {-1}:
+            chars = sum(len(t) for t in set(t for t, l in zip(texts, labels) if l == c))
+            biggest = max(biggest, chars // 3 + 1000)
+    server = LLMServer(min(ctx, config.LLM_CTX), timer)
+    try:
+        server.start(biggest)
         ui.set_stage("Naming and merging themes (Gemma 4 E4B" +
                      (", thinking on)" if config.LLM_THINKING else ")"))
         for num, (mask, texts, tv, labels, kw, substantive, cluster_time) in per_topic.items():
@@ -111,8 +119,17 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
             info = run_log["topics"][name]
             t0 = time.time() - cluster_time
             ui.topic(name, status="running", step="naming clusters")
-            with timer("llm naming"):
-                named = themes.name_clusters(client, name, texts, tv, labels, kw)
+            while True:
+                try:
+                    with timer("llm naming"):
+                        named = themes.name_clusters(server.client, name, texts, tv, labels, kw)
+                    break
+                except llm.ContextTooSmall as e:
+                    # Earlier answers are cached, so redoing the topic is quick.
+                    log.info("A cluster needs %d prompt tokens; restarting Gemma with a bigger "
+                             "context", e.prompt_tokens)
+                    server.start(e.prompt_tokens)
+            client = server.client
             ui.topic(name, step="merging themes")
             with timer("llm merge"):
                 final = themes.merge_themes(client, name, named, texts, tv, labels)
@@ -140,6 +157,9 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
             n_themes = len({t for t in theme_of if t != "Other"})
             note = f"done, {len(info['truncated_clusters'])} truncated!" if info["truncated_clusters"] else "done"
             ui.topic(name, status="done", step=note, themes=n_themes, time=f"{time.time() - t0:.0f}s")
+        run_log["llm_context"] = server.ctx
+    finally:
+        server.stop()
 
     run_log["timings_s"] = {k: round(v, 1) for k, v in timer.times.items()}
     run_log["finished"] = datetime.now().isoformat(timespec="seconds")
@@ -159,6 +179,35 @@ def run(input_path=config.DATA_FILE, sheet=config.SHEET, output_dir=config.OUTPU
     write_outputs(out, run_log, output_dir, out_name)
     ui.set_stage("Finished")
     return kept, run_log
+
+
+class LLMServer:
+    """The Gemma server, which can be restarted with a bigger context mid-run."""
+
+    def __init__(self, max_ctx, timer):
+        self.max_ctx = max_ctx
+        self.timer = timer
+        self.cm = None
+        self.client = None
+        self.ctx = 0
+
+    def start(self, prompt_tokens):
+        ctx, cpu_layers = llm.pick_context(prompt_tokens)
+        ctx = min(ctx, self.max_ctx)
+        if ctx <= self.ctx:
+            raise RuntimeError(f"needed a context above {self.ctx} but none is available")
+        self.stop()
+        progress.ui.set_stage(f"Loading Gemma 4 E4B ({ctx // 1024}k context)")
+        with self.timer("llm load"):
+            self.cm = llm.start(ctx, cpu_layers)
+            url = self.cm.__enter__()
+        self.client = llm.Client(url, ctx)
+        self.ctx = ctx
+
+    def stop(self):
+        if self.cm is not None:
+            self.cm.__exit__(None, None, None)
+            self.cm = None
 
 
 def summary_table(kept):

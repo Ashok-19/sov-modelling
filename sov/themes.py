@@ -14,7 +14,8 @@ import logging
 
 import numpy as np
 
-from . import progress
+from . import config, progress
+from .llm import ContextTooSmall
 
 log = logging.getLogger(__name__)
 
@@ -28,15 +29,6 @@ NAME_SCHEMA = {
     "required": ["theme", "description", "confidence"],
 }
 
-SAME_SCHEMA = {
-    "type": "object",
-    # The short reason comes first so the model thinks before it answers; the
-    # length cap stops it from writing an essay.
-    "properties": {"reason": {"type": "string", "maxLength": 300},
-                   "same_theme": {"type": "boolean"}},
-    "required": ["reason", "same_theme"],
-}
-
 GROUP_NAME_SCHEMA = {
     "type": "object",
     "properties": {"theme": {"type": "string", "maxLength": 100},
@@ -47,17 +39,12 @@ GROUP_NAME_SCHEMA = {
 # Each theme is compared with up to this many of its nearest neighbours, but
 # only those closer than the topic's median theme-to-theme similarity, so
 # clearly unrelated themes aren't checked.
-MERGE_NEIGHBOURS = 4
+MERGE_NEIGHBOURS = 6
 MERGE_EXAMPLES = 6
-# Two groups of themes join when at least this share of the pairs between them
-# are judged the same. Requiring every pair let one noisy verdict keep obvious
+# Two groups of themes join when at least this share of the checked pairs
+# between them are judged the same. Requiring every pair let one noisy verdict keep obvious
 # duplicates apart; a clear majority still stops unrelated themes chaining.
 MERGE_AGREEMENT = 2 / 3
-# When deciding whether two groups join, at most this many of the pairs
-# between them are checked: the ones already answered first, then the closest
-# by embedding. Checking every pair made the step drag on for hours as groups
-# grew, without changing many decisions.
-MERGE_MAX_CROSS_CHECKS = 6
 
 SYSTEM = (
     "You are a social listening analyst preparing a share of voice report on online "
@@ -133,6 +120,8 @@ def name_clusters(client, topic, texts, vecs, labels, keywords):
         messages = _name_messages(topic, keywords.get(c, []), posts)
         n_tokens = client.count_tokens(messages)
         truncated = False
+        if n_tokens > client.prompt_budget() and client.ctx < config.LLM_CTX:
+            raise ContextTooSmall(n_tokens)  # the pipeline restarts the server bigger
         if n_tokens > client.prompt_budget():
             truncated = True
             keep = len(posts)
@@ -188,47 +177,67 @@ def _examples(texts, vecs, labels, c, cents, n=MERGE_EXAMPLES):
     return out
 
 
-def _same_theme(client, topic, named, texts, vecs, labels, cents, a, b):
-    side = lambda c: (f"Theme: {named[c]['theme']}\nDescription: {named[c]['description']}\n"
-                      f"Example posts:\n{_fmt(_examples(texts, vecs, labels, c, cents))}")
+SAME_AS_SCHEMA = {
+    "type": "object",
+    "properties": {"reason": {"type": "string", "maxLength": 600},
+                   "same_as": {"type": "array", "items": {"type": "integer"}}},
+    "required": ["reason", "same_as"],
+}
+
+MERGE_RULES = (
+    "Judge the core claim or subject, the thing an analyst would count: who or what the "
+    "posts are about and what they say about it.\n"
+    "Count a group as the same theme when the core claim is the same, even if its posts cite "
+    "a different source, describe a different mechanism, use different wording or tone, or "
+    "name a more or less specific version of the same thing. For example 'WHO says COVID "
+    "vaccination causes MS' and 'mRNA shots cause MS' are the same theme: both claim COVID "
+    "vaccines cause MS. Posts that debunk a claim belong with the claim.\n"
+    "Count it as different when the core claim or subject differs, even if related. For "
+    "example 'COVID vaccines cause MS' and 'parasites cause MS' are different themes, and so "
+    "are 'COVID vaccines cause MS' and 'general distrust of health authorities'."
+)
+
+
+def _describe(named, texts, vecs, labels, cents, c, n_examples):
+    return (f"Theme: {named[c]['theme']}\nDescription: {named[c]['description']}\n"
+            f"Example posts:\n{_fmt(_examples(texts, vecs, labels, c, cents, n_examples))}")
+
+
+def _which_are_same(client, topic, named, texts, vecs, labels, cents, a, candidates):
+    """One call: which of these neighbouring themes are the same theme as `a`?"""
+    others = "\n\n".join(f"=== GROUP {c} ===\n{_describe(named, texts, vecs, labels, cents, c, 4)}"
+                         for c in candidates)
     user = (
-        f"Parent topic: {topic}\n\n=== GROUP A ===\n{side(a)}\n\n=== GROUP B ===\n{side(b)}\n\n"
-        "Should A and B be reported as one theme in a share of voice report? Judge the core "
-        "claim or subject, the thing an analyst would count: who or what the posts are about "
-        "and what they say about it.\n"
-        "Say yes when the core claim is the same, even if the posts cite a different source, "
-        "describe a different mechanism, use different wording or tone, or name a more or less "
-        "specific version of the same thing. For example 'WHO says COVID vaccination causes MS' "
-        "and 'mRNA shots cause MS' are the same theme: both claim COVID vaccines cause MS. Posts "
-        "that debunk a claim belong with the claim.\n"
-        "Say no when the core claim or subject differs, even if related. For example 'COVID "
-        "vaccines cause MS' and 'parasites cause MS' are different themes, and so are 'COVID "
-        "vaccines cause MS' and 'general distrust of health authorities'."
+        f"Parent topic: {topic}\n\n=== MAIN GROUP ===\n"
+        f"{_describe(named, texts, vecs, labels, cents, a, MERGE_EXAMPLES)}\n\n"
+        f"Other groups in the same topic:\n\n{others}\n\n"
+        "Which of the other groups should be reported as the same theme as the main group in "
+        "a share of voice report? " + MERGE_RULES + "\n"
+        f"Give same_as as a list of group numbers from {sorted(candidates)}; it can be empty."
     )
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
     try:
-        answer, _ = client.chat_json(messages, SAME_SCHEMA, "same_theme")
+        answer, _ = client.chat_json(messages, SAME_AS_SCHEMA, "same_as")
     except ValueError:
-        log.error("Merge check failed for %s vs %s; keeping them apart",
-                  named[a]["theme"], named[b]["theme"])
-        return False
-    log.info("  %s  vs  %s: %s (%s)", named[a]["theme"], named[b]["theme"],
-             "same" if answer["same_theme"] else "different", answer["reason"][:120])
-    return bool(answer["same_theme"])
+        log.error("Merge check failed for %s; keeping it apart", named[a]["theme"])
+        return set()
+    same = {c for c in answer["same_as"] if c in candidates}
+    log.info("  %s  ~  %s", named[a]["theme"], [named[c]["theme"] for c in same] or "none")
+    return same
 
 
 def merge_themes(client, topic, named, texts, vecs, labels):
     """Merge themes that are really the same thing. There's no target count.
 
-    Asking the model to regroup a whole list at once made it lump everything
-    into two or three vague buckets. So instead themes are compared one pair at
-    a time, with example posts from both.
+    For each theme, one call shows the model that theme and its closest
+    neighbours (with example posts) and asks which are the same theme. That's
+    one call per theme rather than one per pair, which matters because each
+    call has the model think first.
 
-    Groups are only joined when a clear majority of the pairs between them are
-    judged the same. Simply chaining "A is like B" and "B is like C" let a
-    whole topic collapse into one theme, because C and A can be about quite
-    different things; requiring every single pair to agree went too far the
-    other way. Missing pairs are asked about when needed.
+    Two themes count as the same only if every check that saw them both
+    agreed. Groups then join when at least two thirds of all the pairs between
+    them are the same; a pair no check looked at counts as different. Plain chaining ("A is like B", "B is like C")
+    once pulled a whole topic into one theme.
 
     Returns {cluster label: (final theme, final description)}.
     """
@@ -239,48 +248,38 @@ def merge_themes(client, topic, named, texts, vecs, labels):
     cmat = np.stack([cents[c] for c in ids])
     sims = cmat @ cmat.T
     sim = {(a, b): float(sims[i, j]) for i, a in enumerate(ids) for j, b in enumerate(ids)}
-
     off_diag = sims[~np.eye(len(ids), dtype=bool)]
     close_enough = float(np.median(off_diag))
-    pairs = set()
-    for i in range(len(ids)):
+
+    votes = {}  # pair -> list of verdicts from the checks that saw both
+    progress.ui.task(f"Checking themes for merges: {topic}", len(ids))
+    for i, a in enumerate(ids):
         order = [j for j in np.argsort(-sims[i]) if j != i]
-        for j in order[:MERGE_NEIGHBOURS]:
-            # The nearest neighbour is always checked; further ones only if close.
-            if j == order[0] or sims[i, j] >= close_enough:
-                pairs.add(tuple(sorted((ids[i], ids[j]))))
-    log.info("Checking %d theme pairs for merges", len(pairs))
+        # The nearest neighbour is always shown; further ones only if close.
+        candidates = [ids[j] for k, j in enumerate(order[:MERGE_NEIGHBOURS])
+                      if k == 0 or sims[i, j] >= close_enough]
+        same = _which_are_same(client, topic, named, texts, vecs, labels, cents, a, candidates)
+        for c in candidates:
+            votes.setdefault(tuple(sorted((a, c))), []).append(c in same)
+        progress.ui.advance()
+    verdicts = {p: all(v) for p, v in votes.items()}
 
-    verdicts = {}
-
-    def same(a, b):
-        key = tuple(sorted((a, b)))
-        if key not in verdicts:
-            verdicts[key] = _same_theme(client, topic, named, texts, vecs, labels, cents, *key)
-            progress.ui.advance()
-        return verdicts[key]
-
-    progress.ui.task(f"Checking theme pairs for merges: {topic}", len(pairs))
-    for a, b in sorted(pairs, key=lambda p: -sim[p]):
-        same(a, b)
-
-    # Join groups, closest pairs first, when most of the cross pairs agree.
     group_of = {c: frozenset([c]) for c in ids}
     for (a, b), is_same in sorted(verdicts.items(), key=lambda kv: -sim[kv[0]]):
         ga, gb = group_of[a], group_of[b]
         if not is_same or ga == gb:
             continue
-        cross = sorted(((x, y) for x in ga for y in gb),
-                       key=lambda p: (tuple(sorted(p)) not in verdicts, -sim[p]))
-        votes = [same(x, y) for x, y in cross[:MERGE_MAX_CROSS_CHECKS]]
-        if sum(votes) / len(votes) >= MERGE_AGREEMENT:
+        # A pair no check ever showed together counts as different: it's far
+        # apart in meaning, and ignoring it is how chaining crept back in.
+        known = [verdicts.get(tuple(sorted((x, y))), False) for x in ga for y in gb]
+        if sum(known) / len(known) >= MERGE_AGREEMENT:
             merged = ga | gb
             for c in merged:
                 group_of[c] = merged
         else:
-            log.info("  Not joining %s with %s: only %d of %d pairs between them match",
+            log.info("  Not joining %s with %s: only %d of %d pairs match",
                      [named[c]["theme"] for c in ga], [named[c]["theme"] for c in gb],
-                     sum(votes), len(votes))
+                     sum(known), len(known))
 
     groups = {g: sorted(g) for g in set(group_of.values())}
     out = {}
