@@ -70,6 +70,8 @@ class Dashboard:
                                  MofNCompleteColumn(), TimeElapsedColumn(),
                                  TextColumn("eta"), TimeRemainingColumn())
         self.task_id = None
+        self.llm = {"calls": 0, "cached": 0, "gen_tokens": 0, "gen_seconds": 0.0,
+                    "last": None, "context": None, "busy_since": None, "busy_name": ""}
 
     # --- lifecycle -------------------------------------------------------
     def start(self, console=None):
@@ -108,6 +110,47 @@ class Dashboard:
         if self.task_id is not None:
             self.progress.update(self.task_id, advance=n,
                                  **({"description": description} if description else {}))
+
+    def llm_context(self, ctx, cpu_layers):
+        self.llm["context"] = (ctx, cpu_layers)
+
+    def llm_busy(self, name):
+        self.llm["busy_since"] = time.time()
+        self.llm["busy_name"] = name
+
+    def llm_done(self, prompt_tokens, gen_tokens, prompt_per_s, gen_per_s, seconds):
+        s = self.llm
+        s["busy_since"] = None
+        s["calls"] += 1
+        s["gen_tokens"] += gen_tokens
+        s["gen_seconds"] += gen_tokens / gen_per_s if gen_per_s else 0
+        s["last"] = (prompt_tokens, gen_tokens, prompt_per_s, gen_per_s, seconds)
+
+    def llm_cached(self):
+        self.llm["cached"] += 1
+
+    def _llm_line(self):
+        s = self.llm
+        if s["context"] is None and not s["calls"] and not s["cached"]:
+            return None
+        line = Text("LLM  ", style="bold")
+        if s["context"]:
+            ctx, layers = s["context"]
+            line.append(f"{ctx // 1024}k context, {layers} layers on CPU   ", style="dim")
+        if s["last"]:
+            p_tok, g_tok, p_rate, g_rate, secs = s["last"]
+            line.append(f"last call {g_rate:.1f} tok/s", style="bold green")
+            line.append(f" ({g_tok} generated incl. thinking, prompt {p_tok} tokens at "
+                        f"{p_rate:.0f} tok/s, {secs:.0f}s)   ")
+        if s["gen_seconds"]:
+            line.append(f"average {s['gen_tokens'] / s['gen_seconds']:.1f} tok/s   ", style="green")
+        line.append(f"calls {s['calls']}")
+        if s["cached"]:
+            line.append(f" (+{s['cached']} from cache)", style="dim")
+        if s["busy_since"]:
+            line.append(f"   waiting on {s['busy_name']} for {time.time() - s['busy_since']:.0f}s",
+                        style="yellow")
+        return line
 
     def event(self, text, level=logging.INFO):
         stamp = time.strftime("%H:%M:%S")
@@ -149,7 +192,8 @@ class Dashboard:
         return Group(
             Panel(header, padding=(0, 1)),
             Panel(self._topic_table(), title="Topics", padding=(0, 1)),
-            Panel(self.progress, title="Current step", padding=(0, 1)),
+            Panel(Group(self.progress, *[x for x in [self._llm_line()] if x]),
+                  title="Current step", padding=(0, 1)),
             Panel(self._events(), title="What's happening", padding=(0, 1)),
         )
 

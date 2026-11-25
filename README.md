@@ -156,6 +156,10 @@ A live display with:
 - the topics and where each one is (clustering, naming, merging, done),
   with its cluster count, theme count and noise share;
 - a progress bar with a time estimate for the current step;
+- the LLM's speed: generation tokens per second for the last call and on
+  average, prompt reading speed, tokens per call, the context size and how
+  many layers sit on the CPU, how many answers came from the cache, and a live
+  timer while it's waiting on an answer;
 - GPU memory, GPU load and RAM, so you can see if the machine is struggling;
 - the latest events: settings chosen, each theme as it's named, merge
   decisions, and any warnings in yellow or errors in red.

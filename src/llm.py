@@ -6,7 +6,7 @@ import logging
 
 import requests
 
-from . import config
+from . import config, progress
 from .server import llama_server, model_path
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ def server_args(ctx, cpu_layers):
 def start(ctx, cpu_layers):
     log.info("Starting Gemma with a %dk context, %d layers' feed-forward weights on the CPU",
              ctx // 1024, cpu_layers)
+    progress.ui.llm_context(ctx, cpu_layers)
     return llama_server(model_path(config.LLM_REPO, config.LLM_FILE), server_args(ctx, cpu_layers))
 
 
@@ -108,6 +109,7 @@ class Client:
         """
         key = self._key(messages, schema, name)
         if key in self.cache:
+            progress.ui.llm_cached()
             return self.cache[key], {"prompt_tokens": 0, "completion_tokens": 0, "cached": True}
         for attempt in range(1, tries + 1):
             try:
@@ -144,6 +146,7 @@ class Client:
         With thinking on, the model reasons first and the server keeps that
         apart from the answer, so the JSON schema only applies to the answer.
         """
+        progress.ui.llm_busy(name)
         if config.LLM_THINKING:
             body = {"messages": messages, "temperature": 0.2, "seed": SEED,
                     "max_tokens": config.LLM_THINKING_BUDGET + config.LLM_MAX_OUTPUT,
@@ -164,7 +167,11 @@ class Client:
             usage = {"prompt_tokens": out["tokens_evaluated"], "completion_tokens": out["tokens_predicted"]}
             content = out["content"]
         t = out.get("timings", {})
-        log.info("  LLM %s: %s prompt tokens, %s generated (incl. thinking), %.0fs", name,
-                 usage["prompt_tokens"], usage["completion_tokens"],
-                 (t.get("prompt_ms", 0) + t.get("predicted_ms", 0)) / 1000)
+        progress.ui.llm_done(usage["prompt_tokens"], usage["completion_tokens"],
+                             t.get("prompt_per_second", 0), t.get("predicted_per_second", 0),
+                             (t.get("prompt_ms", 0) + t.get("predicted_ms", 0)) / 1000)
+        log.info("  LLM %s: %s prompt tokens, %s generated (incl. thinking), %.0fs, %.1f tok/s",
+                 name, usage["prompt_tokens"], usage["completion_tokens"],
+                 (t.get("prompt_ms", 0) + t.get("predicted_ms", 0)) / 1000,
+                 t.get("predicted_per_second", 0))
         return json.loads(content), usage
