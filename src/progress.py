@@ -8,6 +8,7 @@ plain log lines still go to the console and to cache/run.log.
 
 import logging
 import subprocess
+import threading
 import time
 from collections import deque
 
@@ -61,7 +62,7 @@ class Dashboard:
     def __init__(self):
         self.live = None
         self.topics = {}          # name -> dict of columns
-        self.events = deque(maxlen=14)
+        self.events = deque(maxlen=60)
         self.stage = "starting"
         self.started = time.time()
         self._sys = ("", "")
@@ -77,14 +78,31 @@ class Dashboard:
     # --- lifecycle -------------------------------------------------------
     def start(self, console=None):
         self.console = console or Console()
-        self.live = Live(self, console=self.console, refresh_per_second=4, transient=False)
+        # The alternate screen (like htop) redraws in place. Drawing inline
+        # flickered: whenever the display was as tall as the window, rich
+        # couldn't move the cursor back up over it and reprinted everything.
+        self.live = Live(self, console=self.console, refresh_per_second=2, screen=True,
+                         transient=False, vertical_overflow="crop")
         self.live.start()
         logging.getLogger().addHandler(_LogToPanel(self))
+        # GPU and RAM figures come from nvidia-smi, which is slow to call, so a
+        # background thread reads them instead of every redraw.
+        self._polling = True
+        threading.Thread(target=self._poll_system, daemon=True).start()
+
+    def _poll_system(self):
+        while self._polling:
+            self._sys = (_gpu_line(), _ram_line())
+            time.sleep(2)
 
     def stop(self):
+        self._polling = False
         if self.live:
             self.live.stop()
             self.live = None
+            # The alternate screen disappears when it closes, so leave a final
+            # copy of the display in the normal terminal.
+            self.console.print(self)
 
     # --- things the pipeline calls --------------------------------------
     def set_stage(self, text):
@@ -98,7 +116,9 @@ class Dashboard:
         t = self.topics.get(name)
         if t is None:
             return
-        if fields.get("status") == "running" and t["_t"] is None:
+        # The clock runs while a topic is actually being worked on, so it
+        # restarts when the topic comes back from waiting for the LLM.
+        if fields.get("status") == "running" and t["status"] != "running":
             t["_t"] = time.time()
         t.update({k: str(v) for k, v in fields.items()})
 
@@ -129,7 +149,7 @@ class Dashboard:
         if not e or not e["last"]:
             return None
         posts, tokens, secs = e["last"]
-        line = Text("Embedder  ", style="bold")
+        line = Text("Embedder  ", style="bold", no_wrap=True, overflow="ellipsis")
         line.append(f"last batch {tokens / secs:.0f} tok/s", style="bold green")
         line.append(f" ({posts} posts, {tokens} tokens, {secs:.1f}s)   ")
         line.append(f"average {e['tokens'] / e['seconds']:.0f} tok/s, "
@@ -157,28 +177,31 @@ class Dashboard:
     def llm_cached(self):
         self.llm["cached"] += 1
 
-    def _llm_line(self):
+    def _llm_lines(self):
+        """Two lines, always: the LLM's speed, and what it's waiting on right now."""
         s = self.llm
+        stats = Text(no_wrap=True, overflow="ellipsis")
+        waiting = Text(no_wrap=True, overflow="ellipsis")
         if s["context"] is None and not s["calls"] and not s["cached"]:
-            return None
-        line = Text("LLM  ", style="bold")
+            return [stats, waiting]
+        stats.append("LLM  ", style="bold")
         if s["context"]:
             ctx, layers = s["context"]
-            line.append(f"{ctx // 1024}k context, {layers} layers on CPU   ", style="dim")
+            stats.append(f"{ctx // 1024}k context, {layers} layers on CPU   ", style="dim")
         if s["last"]:
             p_tok, g_tok, p_rate, g_rate, secs = s["last"]
-            line.append(f"last call {g_rate:.1f} tok/s", style="bold green")
-            line.append(f" ({g_tok} generated incl. thinking, prompt {p_tok} tokens at "
-                        f"{p_rate:.0f} tok/s, {secs:.0f}s)   ")
+            stats.append(f"last call {g_rate:.1f} tok/s", style="bold green")
+            stats.append(f" ({g_tok} generated incl. thinking, prompt {p_tok} tokens at "
+                         f"{p_rate:.0f} tok/s, {secs:.0f}s)   ")
         if s["gen_seconds"]:
-            line.append(f"average {s['gen_tokens'] / s['gen_seconds']:.1f} tok/s   ", style="green")
-        line.append(f"calls {s['calls']}")
+            stats.append(f"average {s['gen_tokens'] / s['gen_seconds']:.1f} tok/s   ", style="green")
+        stats.append(f"calls {s['calls']}")
         if s["cached"]:
-            line.append(f" (+{s['cached']} from cache)", style="dim")
+            stats.append(f" (+{s['cached']} from cache)", style="dim")
         if s["busy_since"]:
-            line.append(f"   waiting on {s['busy_name']} for {time.time() - s['busy_since']:.0f}s",
-                        style="yellow")
-        return line
+            waiting.append(f"     waiting on {s['busy_name']} for "
+                           f"{time.time() - s['busy_since']:.0f}s", style="yellow")
+        return [stats, waiting]
 
     def event(self, text, level=logging.INFO):
         stamp = time.strftime("%H:%M:%S")
@@ -201,28 +224,35 @@ class Dashboard:
                         t["step"], t["clusters"], t["themes"], t["noise"], took)
         return tbl
 
-    def _events(self):
-        lines = Text()
-        for stamp, text, style in self.events:
-            lines.append(f"{stamp} ", style="dim")
-            lines.append(text[:220] + "\n", style=style)
-        return lines
+    def _events(self, n_lines):
+        """The last n_lines events, one line each, padded so the panel never changes height."""
+        rows = []
+        for stamp, text, style in list(self.events)[-n_lines:]:
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append(f"{stamp} ", style="dim")
+            line.append(text.replace("\n", " "), style=style)
+            rows.append(line)
+        rows += [Text("")] * (n_lines - len(rows))
+        return Group(*rows)
 
     def __rich__(self):
-        if time.time() - self._sys_at > 2:
-            self._sys = (_gpu_line(), _ram_line())
-            self._sys_at = time.time()
         elapsed = time.time() - self.started
-        header = Text.assemble(("Share of voice themes  ", "bold cyan"),
-                               (f"{self.stage}", "bold"),
-                               (f"   elapsed {elapsed / 60:.1f} min   ", "dim"),
-                               (f"{self._sys[0]}   {self._sys[1]}", "magenta"))
+        header = Text(no_wrap=True, overflow="ellipsis")
+        header.append("Share of voice themes  ", style="bold cyan")
+        header.append(self.stage, style="bold")
+        header.append(f"   elapsed {elapsed / 60:.1f} min   ", style="dim")
+        header.append(f"{self._sys[0]}   {self._sys[1]}", style="magenta")
+
+        # Every panel has a fixed height, so the screen layout never jumps.
+        step_lines = [self._embed_line() or Text(""), *self._llm_lines()]
+        fixed = 3 + (len(self.topics) + 3) + (len(step_lines) + 3) + 2
+        height = self.console.size.height if self.console else 40
+        n_events = max(3, height - fixed)
         return Group(
             Panel(header, padding=(0, 1)),
             Panel(self._topic_table(), title="Topics", padding=(0, 1)),
-            Panel(Group(self.progress, *[x for x in [self._embed_line(), self._llm_line()] if x]),
-                  title="Current step", padding=(0, 1)),
-            Panel(self._events(), title="What's happening", padding=(0, 1)),
+            Panel(Group(self.progress, *step_lines), title="Current step", padding=(0, 1)),
+            Panel(self._events(n_events), title="What's happening", padding=(0, 1)),
         )
 
 
