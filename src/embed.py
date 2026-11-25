@@ -6,6 +6,7 @@ rerun (or a run on another topic) only embeds posts it hasn't seen before.
 
 import hashlib
 import logging
+import time
 
 import numpy as np
 import requests
@@ -64,18 +65,23 @@ def embed_posts(texts):
 
     if todo:
         model = model_path(config.EMBED_REPO, config.EMBED_FILE)
+        progress.ui.embed_start(len(texts) - len(todo))
         with llama_server(model, server_args()) as url:
             progress.ui.task("Embedding posts", len(todo))
             for i in range(0, len(todo), BATCH):
                 chunk = todo[i:i + BATCH]
+                t0 = time.time()
                 r = requests.post(url + "/v1/embeddings",
                                   json={"input": [p for _, p in chunk]}, timeout=600)
                 r.raise_for_status()
+                tokens = r.json().get("usage", {}).get("prompt_tokens", 0)
+                progress.ui.embed_done(len(chunk), tokens, time.time() - t0)
                 for (k, _), item in zip(chunk, sorted(r.json()["data"], key=lambda d: d["index"])):
                     cache[k] = np.asarray(item["embedding"], dtype=np.float32)
                 progress.ui.advance(len(chunk))
                 if (i // BATCH) % 20 == 0:
-                    log.info("  embedded %d / %d", min(i + BATCH, len(todo)), len(todo))
+                    log.info("  embedded %d / %d (%.0f tokens/s)", min(i + BATCH, len(todo)),
+                             len(todo), tokens / max(time.time() - t0, 1e-6))
         _save_cache(cache)
 
     vecs = np.stack([cache[k] for k in keys])

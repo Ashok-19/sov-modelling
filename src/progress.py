@@ -70,6 +70,7 @@ class Dashboard:
                                  MofNCompleteColumn(), TimeElapsedColumn(),
                                  TextColumn("eta"), TimeRemainingColumn())
         self.task_id = None
+        self.embed = None
         self.llm = {"calls": 0, "cached": 0, "gen_tokens": 0, "gen_seconds": 0.0,
                     "last": None, "context": None, "busy_since": None, "busy_name": ""}
 
@@ -110,6 +111,33 @@ class Dashboard:
         if self.task_id is not None:
             self.progress.update(self.task_id, advance=n,
                                  **({"description": description} if description else {}))
+
+    def embed_start(self, cached):
+        self.embed = {"posts": 0, "tokens": 0, "seconds": 0.0, "cached": cached, "last": None}
+
+    def embed_done(self, posts, tokens, seconds):
+        e = self.embed
+        if e is None:
+            return
+        e["posts"] += posts
+        e["tokens"] += tokens
+        e["seconds"] += seconds
+        e["last"] = (posts, tokens, seconds)
+
+    def _embed_line(self):
+        e = self.embed
+        if not e or not e["last"]:
+            return None
+        posts, tokens, secs = e["last"]
+        line = Text("Embedder  ", style="bold")
+        line.append(f"last batch {tokens / secs:.0f} tok/s", style="bold green")
+        line.append(f" ({posts} posts, {tokens} tokens, {secs:.1f}s)   ")
+        line.append(f"average {e['tokens'] / e['seconds']:.0f} tok/s, "
+                    f"{e['posts'] / e['seconds']:.1f} posts/s   ", style="green")
+        line.append(f"embedded {e['posts']}")
+        if e["cached"]:
+            line.append(f" (+{e['cached']} from cache)", style="dim")
+        return line
 
     def llm_context(self, ctx, cpu_layers):
         self.llm["context"] = (ctx, cpu_layers)
@@ -192,7 +220,7 @@ class Dashboard:
         return Group(
             Panel(header, padding=(0, 1)),
             Panel(self._topic_table(), title="Topics", padding=(0, 1)),
-            Panel(Group(self.progress, *[x for x in [self._llm_line()] if x]),
+            Panel(Group(self.progress, *[x for x in [self._embed_line(), self._llm_line()] if x]),
                   title="Current step", padding=(0, 1)),
             Panel(self._events(), title="What's happening", padding=(0, 1)),
         )

@@ -156,6 +156,8 @@ A live display with:
 - the topics and where each one is (clustering, naming, merging, done),
   with its cluster count, theme count and noise share;
 - a progress bar with a time estimate for the current step;
+- the embedder's speed while it runs: tokens and posts per second for the last
+  batch and on average, and how many posts came from the cache;
 - the LLM's speed: generation tokens per second for the last call and on
   average, prompt reading speed, tokens per call, the context size and how
   many layers sit on the CPU, how many answers came from the cache, and a live
