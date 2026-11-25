@@ -2,9 +2,9 @@
 __pycache__/
 *.pyc
 # input data and everything the pipeline writes stays local
-data/
-cache/
-output/
+data/*
+cache/*
+output/*
 
 # never commit client data or anything big, wherever it ends up
 *.xlsx
@@ -17,4 +17,4 @@ output/
 *.npy
 *.log
 *.typescript
-models/
+models/*
